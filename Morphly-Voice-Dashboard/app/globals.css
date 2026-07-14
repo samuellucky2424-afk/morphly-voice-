@@ -423,6 +423,65 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .toast-message svg { color: #52da9c; }
 @keyframes toastIn { from { opacity: 0; transform: translate(-50%, 9px); } }
 @keyframes catalog-spin { to { transform: rotate(360deg); } }
+
+.software-update-card { background: #fff; border: 1px solid var(--line, #e7e7eb); border-radius: 17px; box-shadow: var(--shadow, 0 12px 32px rgba(20,20,28,.06)); overflow: hidden; padding: 21px; }
+.software-update-card.settings-card { margin-top: 16px; }
+.software-update-heading { align-items: center; display: flex; gap: 10px; }
+.software-update-heading > div { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.software-update-heading h2 { color: #26262b; font-size: 15px; letter-spacing: -.025em; margin: 3px 0 0; }
+.software-update-icon { align-items: center; background: #fff0f2; border-radius: 10px; color: var(--red, #e20d2f); display: inline-flex; height: 38px; justify-content: center; width: 38px; }
+.software-update-badge { align-items: center; background: #f5f5f7; border: 1px solid #e6e6ea; border-radius: 999px; color: #696971; display: inline-flex; font-size: 8px; font-weight: 720; gap: 5px; padding: 6px 9px; white-space: nowrap; }
+.software-update-badge.tone-success, .software-update-badge.tone-ready { background: #edfbf4; border-color: #c9eedc; color: #16764f; }
+.software-update-badge.tone-error { background: #fff1f2; border-color: #f3cbd1; color: #b51c35; }
+.software-update-body { display: grid; gap: 11px; margin-top: 15px; }
+.software-update-state { align-items: flex-start; background: #f8f8fa; border: 1px solid #e8e8ec; border-radius: 12px; display: grid; gap: 10px; grid-template-columns: 30px 1fr; padding: 12px; }
+.software-update-state > span { align-items: center; background: #fff; border-radius: 8px; color: #777780; display: flex; height: 30px; justify-content: center; width: 30px; }
+.software-update-state strong { color: #2f2f35; display: block; font-size: 10.5px; }
+.software-update-state p { color: #777780; font-size: 8.5px; line-height: 1.5; margin: 3px 0 0; }
+.software-update-state.tone-working { background: #f1f6ff; border-color: #d9e5fa; }
+.software-update-state.tone-working > span { color: #356ab5; }
+.software-update-state.tone-ready, .software-update-state.tone-success { background: #effaf5; border-color: #cfeada; }
+.software-update-state.tone-ready > span, .software-update-state.tone-success > span { color: #16764f; }
+.software-update-state.tone-available { background: #fff7ec; border-color: #f1ddbc; }
+.software-update-state.tone-available > span { color: #a76c13; }
+.software-update-state.tone-error { background: #fff3f4; border-color: #efcbd1; }
+.software-update-state.tone-error > span { color: #bd1d38; }
+.software-update-release { align-items: center; background: #fff; border: 1px solid #e9e9ed; border-radius: 11px; display: flex; gap: 12px; justify-content: space-between; padding: 10px 12px; }
+.software-update-release > div { display: grid; gap: 2px; }
+.software-update-release small { color: #9a9aa2; font-size: 7px; font-weight: 720; letter-spacing: .08em; text-transform: uppercase; }
+.software-update-release strong { color: #34343a; font-size: 9.5px; }
+.software-update-release span { color: #8b8b93; font-size: 8px; }
+.software-update-release a { align-items: center; color: var(--red, #e20d2f); display: inline-flex; font-size: 8px; font-weight: 700; gap: 4px; text-decoration: none; white-space: nowrap; }
+.software-update-progress { background: #f7f8fb; border: 1px solid #e4e7ee; border-radius: 11px; padding: 11px 12px; }
+.software-update-progress > div { align-items: center; display: flex; justify-content: space-between; margin-bottom: 7px; }
+.software-update-progress strong, .software-update-progress span { color: #4b4b53; font-size: 8.5px; }
+.software-update-progress span { font-weight: 750; }
+.software-update-progress progress { appearance: none; background: #e5e8ef; border: 0; border-radius: 999px; display: block; height: 7px; overflow: hidden; width: 100%; }
+.software-update-progress progress::-webkit-progress-bar { background: #e5e8ef; border-radius: 999px; }
+.software-update-progress progress::-webkit-progress-value { background: linear-gradient(90deg, var(--red, #e20d2f), #ff5a72); border-radius: 999px; transition: width .25s ease; }
+.software-update-progress progress::-moz-progress-bar { background: linear-gradient(90deg, var(--red, #e20d2f), #ff5a72); border-radius: 999px; }
+.software-update-progress progress:not([value]) { animation: softwareProgressPulse 1.2s ease-in-out infinite; }
+.software-update-progress > small { color: #93939b; display: block; font-size: 7.5px; margin-top: 6px; text-align: right; }
+@keyframes softwareProgressPulse { 50% { opacity: .5; } }
+.software-update-notes { background: #fafafa; border: 1px solid #e8e8eb; border-radius: 10px; padding: 9px 11px; }
+.software-update-notes summary { color: #53535b; cursor: pointer; font-size: 8.5px; font-weight: 700; }
+.software-update-notes p { color: #777780; font-size: 8px; line-height: 1.55; margin: 8px 0 0; max-height: 150px; overflow: auto; white-space: pre-wrap; }
+.software-update-blocked { align-items: center; background: #fff7e8; border: 1px solid #ecd6a8; border-radius: 9px; color: #815d1d; display: flex; font-size: 8px; gap: 7px; padding: 9px 10px; }
+.software-update-footer { align-items: center; border-top: 1px solid #ececef; display: flex; gap: 14px; justify-content: space-between; margin-top: 14px; padding-top: 13px; }
+.software-update-footer > span { color: #96969e; font-size: 7.5px; }
+.software-update-footer > div { display: flex; gap: 8px; }
+.software-update-footer button { align-items: center; border-radius: 9px; display: inline-flex; font-size: 8.5px; font-weight: 720; gap: 6px; height: 36px; justify-content: center; padding: 0 12px; }
+.software-update-check { background: #fff; border: 1px solid #dedee3; color: #62626a; }
+.software-update-check:hover:not(:disabled) { background: #f8f8f9; border-color: #ceced4; }
+.software-update-install { background: var(--red, #e20d2f); border: 1px solid var(--red, #e20d2f); box-shadow: 0 8px 18px rgba(226,13,47,.14); color: #fff; }
+.software-update-install:hover:not(:disabled) { background: var(--red-dark, #bc0926); }
+.software-update-footer button:disabled { box-shadow: none; cursor: not-allowed; opacity: .5; }
+.software-update-safety { align-items: center; color: #9999a1; display: flex; font-size: 7px; gap: 5px; justify-content: flex-end; margin: 8px 0 0; }
+.software-update-spin { animation: softwareUpdateSpin .9s linear infinite; }
+@keyframes softwareUpdateSpin { to { transform: rotate(360deg); } }
+.admin-card.software-update-card { border-color: var(--admin-line, #e7e7eb); border-radius: 16px; box-shadow: 0 13px 38px rgba(28,25,32,.045); padding: 20px; }
+.admin-card.software-update-card .section-kicker { color: #a1a1a9; }
+
 .menu-scrim { display: none; }
 
 @media (max-width: 1180px) {
@@ -491,6 +550,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   .plan-grid { grid-template-columns: 1fr; }
   .plan-card { min-height: 95px; }
   .plan-card strong { margin-top: 5px; }
+  .software-update-heading { align-items: flex-start; flex-wrap: wrap; }
+  .software-update-badge { margin-left: 48px; }
+  .software-update-release, .software-update-footer { align-items: stretch; flex-direction: column; }
+  .software-update-footer > div { display: grid; grid-template-columns: 1fr 1fr; }
+  .software-update-footer button { width: 100%; }
+  .software-update-safety { align-items: flex-start; justify-content: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {

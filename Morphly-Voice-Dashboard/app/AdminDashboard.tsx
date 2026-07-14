@@ -53,6 +53,7 @@ import {
   updateAdminBillingConfig,
   updateSupportConfig,
 } from "./cloud-api";
+import SoftwareUpdateCard from "./SoftwareUpdateCard";
 import type {
   AdminLiveSession,
   AdminLogEntry,
@@ -71,11 +72,13 @@ import type {
   SuspensionInput,
   UpdateSupportConfigInput,
 } from "./platform-types";
+import type { AppUpdaterController } from "./use-app-updater";
 import "./admin.css";
 
 type AdminDashboardProps = {
   session: PlatformSession;
   token: string;
+  updater: AppUpdaterController;
   onSignOut: () => Promise<void> | void;
 };
 
@@ -290,7 +293,7 @@ function sessionIdentity(session: PlatformSession) {
   return { name, email };
 }
 
-export default function AdminDashboard({ session, token, onSignOut }: AdminDashboardProps) {
+export default function AdminDashboard({ session, token, updater, onSignOut }: AdminDashboardProps) {
   const [activeScreen, setActiveScreen] = useState<AdminScreen>("overview");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [states, setStates] = useState<Record<AdminScreen, AsyncState>>(() => ({
@@ -779,6 +782,7 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
                   overview={overview}
                   supportConfig={supportConfig}
                   session={session}
+                  updater={updater}
                 />
               )}
             </>
@@ -1088,7 +1092,7 @@ function CreditPackagesScreen({
   );
 }
 
-function SettingsScreen({ overview, supportConfig, session }: { overview: AdminOverview | null; supportConfig: SupportConfig | null; session: PlatformSession }) {
+function SettingsScreen({ overview, supportConfig, session, updater }: { overview: AdminOverview | null; supportConfig: SupportConfig | null; session: PlatformSession; updater: AppUpdaterController }) {
   const identity = sessionIdentity(session);
   const role = readString(session, ["role"], readString(nestedRecord(session, ["user", "profile"]), ["role"], "admin"));
   return (
@@ -1096,6 +1100,7 @@ function SettingsScreen({ overview, supportConfig, session }: { overview: AdminO
       <section className="admin-card"><div className="admin-card-heading"><div><span>Access control</span><h3>Administrator session</h3></div><ShieldCheck size={19} /></div><div className="admin-settings-list"><SettingsRow label="Signed in as" value={identity.email} status="verified" /><SettingsRow label="Role" value={role} status="protected" /><SettingsRow label="Authorization" value="Firebase ID token" status="server verified" /></div><p className="admin-privacy-note"><ShieldCheck size={16} /> Admin authorization is checked again by every Vercel serverless endpoint.</p></section>
       <section className="admin-card"><div className="admin-card-heading"><div><span>Connected services</span><h3>Integration status</h3></div><Activity size={19} /></div><div className="admin-settings-list"><SettingsRow label="Firebase Auth & Firestore" value={overview ? "Configured" : "Unavailable"} status={overview ? "connected" : "check API"} /><SettingsRow label="Flutterwave" value="Server keys required" status="check Vercel" /><SettingsRow label="Vercel serverless API" value={overview ? "Responding" : "No response"} status={overview ? "connected" : "check API"} /><SettingsRow label="Customer care" value={supportConfig ? "Published" : "Not configured"} status={supportConfig ? "active" : "attention"} /></div></section>
       <section className="admin-card admin-settings-wide"><div className="admin-card-heading"><div><span>Security posture</span><h3>Operational safeguards</h3></div></div><div className="admin-safeguard-grid"><div><ShieldCheck size={18} /><strong>Server-side role checks</strong><p>Privileged requests require a valid Firebase token and administrator role.</p></div><div><FileText size={18} /><strong>Audit every mutation</strong><p>Credit, suspension, support, billing, and notification changes retain actor and reason.</p></div><div><Database size={18} /><strong>Secrets stay server-side</strong><p>Firebase Admin and Flutterwave secret keys never enter this static client.</p></div></div></section>
+      <SoftwareUpdateCard updater={updater} className="admin-card admin-settings-wide" />
     </div>
   );
 }

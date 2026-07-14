@@ -48,6 +48,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AdminDashboard from "./AdminDashboard";
 import { AuthGate, usePlatformAuth } from "./AuthGate";
+import SoftwareUpdateCard from "./SoftwareUpdateCard";
 import {
   activateUsageSession,
   clearUserSessions,
@@ -95,6 +96,7 @@ import type {
   SupportConfig,
   UserSessionRecord,
 } from "./platform-types";
+import { useAppUpdater, type AppUpdaterController } from "./use-app-updater";
 
 type Voice = EngineVoice & {
   type: string;
@@ -127,6 +129,7 @@ type InstalledModel = {
 type VoiceWorkspaceProps = {
   session: PlatformSession;
   token: string;
+  updater: AppUpdaterController;
   onSignOut: () => Promise<void> | void;
   onRefreshSession: () => Promise<void> | void;
 };
@@ -302,7 +305,7 @@ function readableError(error: unknown) {
   return "The voice engine could not complete that request.";
 }
 
-function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWorkspaceProps) {
+function VoiceWorkspace({ session, token, updater, onSignOut, onRefreshSession }: VoiceWorkspaceProps) {
   const [engineMode, setEngineMode] = useState<EngineMode>("rvc");
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus | null>(null);
   const [engineInfo, setEngineInfo] = useState<EngineInfo | null>(null);
@@ -1224,14 +1227,14 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
         status: engineError ? "error" : isRunning ? "live" : engineReady ? "idle" : "starting",
         voiceName: selectedVoice?.name,
         latencyMs: latestLatencyRef.current,
-        appVersion: "0.1.0",
+        appVersion: updater.status.currentVersion !== "Unknown" ? updater.status.currentVersion : "0.2.0",
         platform: navigator.userAgent,
       }).catch(() => undefined);
     };
     report();
     const timer = window.setInterval(report, 30_000);
     return () => window.clearInterval(timer);
-  }, [engineError, engineMode, engineReady, isRunning, selectedVoice?.name, presenceSessionId, token]);
+  }, [engineError, engineMode, engineReady, isRunning, selectedVoice?.name, presenceSessionId, token, updater.status.currentVersion]);
 
   const shownVoices = useMemo(() => {
     const ordered = voiceTab === "my" ? voices : [...voices].reverse();
@@ -1660,6 +1663,12 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
             )}
           </section>
 
+          <SoftwareUpdateCard
+            updater={updater}
+            className="settings-card"
+            installBlockedReason={isRunning ? "Stop the active voice-conversion session before installing this update." : null}
+          />
+
           <footer className="dashboard-footer">
             <span><span className="pulse-dot" /> {engineLabel} · {gatewayStatus?.ready ? "Connected" : "Offline"}</span>
             <span>Need help? <button onClick={() => setGuideOpen(true)}>Setup guide</button><button onClick={() => setSupportOpen(true)}>Customer care</button></span>
@@ -1888,14 +1897,16 @@ export default function Home() {
 
 function RoleRoutedApplication() {
   const auth = usePlatformAuth();
+  const updater = useAppUpdater(auth.token);
   if (!auth.session || !auth.token) return null;
   if (auth.session.role === "admin") {
-    return <AdminDashboard session={auth.session} token={auth.token} onSignOut={auth.signOut} />;
+    return <AdminDashboard session={auth.session} token={auth.token} updater={updater} onSignOut={auth.signOut} />;
   }
   return (
     <VoiceWorkspace
       session={auth.session}
       token={auth.token}
+      updater={updater}
       onSignOut={auth.signOut}
       onRefreshSession={auth.refreshSession}
     />

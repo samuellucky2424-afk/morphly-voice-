@@ -53,7 +53,7 @@ After reviewing the estimated size and the Beatrice notice, install Inno Setup
 6 and run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\Build-MorphlyInstaller.ps1 -Version 0.1.0 -ConfirmLargeBuild
+powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\Build-MorphlyInstaller.ps1 -Version 0.2.0 -ConfirmLargeBuild
 ```
 
 If Inno Setup is installed in a nonstandard directory, add:
@@ -64,8 +64,11 @@ If Inno Setup is installed in a nonstandard directory, add:
 
 The expected outputs are:
 
-- `packaging\output\Morphly-Voice-Setup-0.1.0.exe`
-- `packaging\output\Morphly-Voice-Setup-0.1.0.exe.sha256`
+- `packaging\output\Morphly-Voice-Setup-0.2.0.exe`
+- `packaging\output\Morphly-Voice-Setup-0.2.0.exe.sha256`
+
+For the draft-first GitHub Releases workflow used by the in-app updater, see
+`packaging\RELEASING.md`.
 
 The script refuses to overwrite an existing staging directory. This is a
 safety feature; remove an old `packaging\work\MorphlyVoice-<version>` directory
