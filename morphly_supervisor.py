@@ -32,6 +32,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
+from morphly_updater import MorphlyUpdater, UpdaterError, UpdaterStateError
+
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_DASHBOARD_ROOT = REPO_ROOT / "Morphly-Voice-Dashboard" / "dist-static"
@@ -101,6 +103,14 @@ ENGINE_ROUTE_PREFIXES = (
 HEALTH_PATHS = {
     "rvc": ("/info",),
     "beatrice": ("/api/server-properties/properties",),
+}
+
+UPDATER_ROUTE_PREFIX = "/api/morphly/updater/"
+UPDATER_ROUTES = {
+    f"{UPDATER_ROUTE_PREFIX}status",
+    f"{UPDATER_ROUTE_PREFIX}check",
+    f"{UPDATER_ROUTE_PREFIX}download",
+    f"{UPDATER_ROUTE_PREFIX}install",
 }
 
 
@@ -739,6 +749,7 @@ class MorphlyGatewayHandler(BaseHTTPRequestHandler):
     config: GatewayConfig
     supervisor: EngineSupervisor
     token_verifier: FirebaseIdTokenVerifier
+    updater: MorphlyUpdater | None
 
     def do_GET(self) -> None:  # noqa: N802
         self._dispatch()
@@ -802,6 +813,10 @@ class MorphlyGatewayHandler(BaseHTTPRequestHandler):
                 self._send_json(405, {"ok": False, "error": "Method not allowed."})
             return
 
+        if path in UPDATER_ROUTES:
+            self._handle_updater_request(path)
+            return
+
         if self.headers.get("Upgrade"):
             self._send_json(
                 501,
@@ -817,6 +832,118 @@ class MorphlyGatewayHandler(BaseHTTPRequestHandler):
             return
 
         self._serve_dashboard(path)
+
+    def _handle_updater_request(self, path: str) -> None:
+        if not self._client_is_loopback():
+            self._send_json(403, self._updater_error_payload("Software updates are loopback-only."))
+            return
+        if self.updater is None:
+            self._send_json(503, self._unsupported_updater_status())
+            return
+
+        if path == f"{UPDATER_ROUTE_PREFIX}status":
+            if self.command in {"GET", "HEAD"}:
+                self._send_json(200, self.updater.status())
+            else:
+                self._send_json(405, self._updater_error_payload("Method not allowed."))
+            return
+        if self.command != "POST":
+            self._send_json(405, self._updater_error_payload("Method not allowed."))
+            return
+        if not self._consume_updater_request_body():
+            return
+
+        try:
+            if path == f"{UPDATER_ROUTE_PREFIX}check":
+                self._send_json(200, self.updater.check())
+                return
+            if path == f"{UPDATER_ROUTE_PREFIX}download":
+                self._send_json(202, self.updater.start_download())
+                return
+            if path == f"{UPDATER_ROUTE_PREFIX}install":
+                status = self.updater.install(parent_pid=os.getpid(), restart_after_install=True)
+                self.close_connection = True
+                self._send_json(202, status, response_headers={"Connection": "close"})
+                threading.Thread(
+                    target=self._shutdown_for_update_install,
+                    name="morphly-update-shutdown",
+                    daemon=True,
+                ).start()
+                return
+        except UpdaterStateError as exc:
+            self._send_json(409, self._updater_error_payload(str(exc)))
+            return
+        except UpdaterError as exc:
+            self._send_json(503, self._updater_error_payload(str(exc)))
+            return
+
+        self._send_json(404, self._updater_error_payload("Updater route not found."))
+
+    def _consume_updater_request_body(self) -> bool:
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            self._send_json(
+                400,
+                self._updater_error_payload("Chunked updater requests are not supported."),
+                response_headers={"Connection": "close"},
+            )
+            return False
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            content_length = -1
+        if content_length < 0 or content_length > JSON_LIMIT:
+            self.close_connection = True
+            self._send_json(
+                400,
+                self._updater_error_payload("Updater requests must have a small request body."),
+                response_headers={"Connection": "close"},
+            )
+            return False
+        if content_length:
+            content = self.rfile.read(content_length)
+            if len(content) != content_length:
+                self.close_connection = True
+                self._send_json(
+                    400,
+                    self._updater_error_payload("The updater request body ended early."),
+                    response_headers={"Connection": "close"},
+                )
+                return False
+        return True
+
+    def _shutdown_for_update_install(self) -> None:
+        # Give the HTTP response time to leave the socket before stopping the
+        # engine and server. The detached helper waits for this process to exit.
+        time.sleep(0.25)
+        self.supervisor.shutdown()
+        self.server.shutdown()
+
+    def _updater_error_payload(self, message: str) -> dict[str, object]:
+        payload = self.updater.status() if self.updater is not None else self._unsupported_updater_status()
+        payload["ok"] = False
+        payload["error"] = message
+        return payload
+
+    @staticmethod
+    def _unsupported_updater_status() -> dict[str, object]:
+        return {
+            "ok": False,
+            "supported": False,
+            "phase": "error",
+            "currentVersion": None,
+            "latestVersion": None,
+            "releaseName": None,
+            "releaseNotes": None,
+            "releaseUrl": None,
+            "downloadedBytes": 0,
+            "totalBytes": 0,
+            "progressPercent": 0,
+            "lastCheckedAt": None,
+            "error": "The Morphly desktop updater is not configured.",
+            "updateAvailable": False,
+            "canInstall": False,
+        }
 
     def _handle_engine_switch(self) -> None:
         if not self._client_is_loopback():
@@ -1129,6 +1256,7 @@ def build_handler(
     config: GatewayConfig,
     supervisor: EngineSupervisor,
     token_verifier: FirebaseIdTokenVerifier,
+    updater: MorphlyUpdater | None = None,
 ) -> type[MorphlyGatewayHandler]:
     class ConfiguredMorphlyGatewayHandler(MorphlyGatewayHandler):
         pass
@@ -1136,6 +1264,7 @@ def build_handler(
     ConfiguredMorphlyGatewayHandler.config = config
     ConfiguredMorphlyGatewayHandler.supervisor = supervisor
     ConfiguredMorphlyGatewayHandler.token_verifier = token_verifier
+    ConfiguredMorphlyGatewayHandler.updater = updater
     return ConfiguredMorphlyGatewayHandler
 
 
@@ -1189,12 +1318,13 @@ def main() -> int:
         default_mode=arguments.default_mode,
     )
     supervisor = EngineSupervisor(config)
+    updater = MorphlyUpdater(REPO_ROOT)
     try:
         token_verifier = FirebaseIdTokenVerifier(arguments.firebase_project_id)
     except ValueError as exc:
         print(f"Invalid Firebase project configuration: {exc}", file=sys.stderr)
         return 2
-    handler = build_handler(config, supervisor, token_verifier)
+    handler = build_handler(config, supervisor, token_verifier, updater)
 
     try:
         server = MorphlyGatewayServer((config.public_host, config.public_port), handler)

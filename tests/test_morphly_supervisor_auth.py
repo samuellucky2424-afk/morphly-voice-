@@ -266,6 +266,41 @@ class _FakeSupervisor:
         return {"mode": mode, "ready": True, "phase": "ready"}
 
 
+class _FakeUpdater:
+    def __init__(self) -> None:
+        self.actions: list[str] = []
+        self.phase = "idle"
+
+    def status(self) -> dict[str, object]:
+        return {
+            "ok": True,
+            "supported": True,
+            "phase": self.phase,
+            "currentVersion": "0.1.0",
+            "latestVersion": None,
+            "releaseName": None,
+            "releaseNotes": None,
+            "releaseUrl": None,
+            "downloadedBytes": 0,
+            "totalBytes": 0,
+            "progressPercent": 0,
+            "lastCheckedAt": None,
+            "error": None,
+            "updateAvailable": False,
+            "canInstall": False,
+        }
+
+    def check(self) -> dict[str, object]:
+        self.actions.append("check")
+        self.phase = "up_to_date"
+        return self.status()
+
+    def start_download(self) -> dict[str, object]:
+        self.actions.append("download")
+        self.phase = "downloading"
+        return self.status()
+
+
 class _CapturingEngineHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     captured: list[dict[str, object]] = []
@@ -352,7 +387,8 @@ def test_gateway_protects_engine_routes_and_strips_identity_headers(tmp_path: Pa
         default_mode="rvc",
     )
     supervisor = _FakeSupervisor()
-    gateway = MorphlyGatewayServer(("127.0.0.1", 0), build_handler(config, supervisor, verifier))
+    updater = _FakeUpdater()
+    gateway = MorphlyGatewayServer(("127.0.0.1", 0), build_handler(config, supervisor, verifier, updater))
     gateway_thread = threading.Thread(target=gateway.serve_forever, daemon=True)
     gateway_thread.start()
 
@@ -372,6 +408,43 @@ def test_gateway_protects_engine_routes_and_strips_identity_headers(tmp_path: Pa
             headers={"Authorization": f"Bearer {valid_token}"},
         )
         assert status == 200
+
+        status, _, _ = _request(gateway.server_port, "GET", "/api/morphly/updater/status")
+        assert status == 401
+        assert updater.actions == []
+
+        status, _, body = _request(
+            gateway.server_port,
+            "GET",
+            "/api/morphly/updater/status",
+            headers={"Authorization": f"Bearer {valid_token}"},
+        )
+        assert status == 200
+        assert json.loads(body)["phase"] == "idle"
+
+        status, _, _ = _request(gateway.server_port, "POST", "/api/morphly/updater/check")
+        assert status == 401
+        assert updater.actions == []
+
+        status, _, body = _request(
+            gateway.server_port,
+            "POST",
+            "/api/morphly/updater/check",
+            headers={"Authorization": f"Bearer {valid_token}"},
+        )
+        assert status == 200
+        assert json.loads(body)["phase"] == "up_to_date"
+        assert updater.actions == ["check"]
+
+        status, _, body = _request(
+            gateway.server_port,
+            "POST",
+            "/api/morphly/updater/download",
+            headers={"Authorization": f"Bearer {valid_token}"},
+        )
+        assert status == 202
+        assert json.loads(body)["phase"] == "downloading"
+        assert updater.actions == ["check", "download"]
 
         status, _, _ = _request(gateway.server_port, "GET", "/info")
         assert status == 401

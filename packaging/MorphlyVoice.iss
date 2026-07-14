@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.2.0"
 #endif
 #ifndef StageDir
   #error StageDir must point to the prepared Morphly Voice directory.
@@ -47,7 +47,8 @@ VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#AppVersion}
 
 [Files]
-Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: "server\stored_setting.json"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\server\stored_setting.json"; DestDir: "{app}\server"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
 
 [Dirs]
 Name: "{app}\runtime-logs"

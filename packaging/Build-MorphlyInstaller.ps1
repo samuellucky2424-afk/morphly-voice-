@@ -26,7 +26,7 @@ if (-not $Version) {
     $Version = [string]$packageJson.version
 }
 if ($Version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
-    throw "Version must be a semantic version such as 0.1.0: $Version"
+    throw "Version must be a semantic version such as 0.2.0: $Version"
 }
 
 if ($preflight.Estimate) {
@@ -131,6 +131,8 @@ New-Item -ItemType Directory -Path $resolvedOutputRoot -Force | Out-Null
 
 foreach ($file in @(
     "morphly_supervisor.py",
+    "morphly_updater.py",
+    "morphly_update_helper.ps1",
     "start_http.bat",
     "start_engine_mode.bat",
     "LICENSE",
@@ -217,6 +219,7 @@ try {
     $compileProbe = "import pathlib, sys; [compile(pathlib.Path(p).read_bytes(), p, 'exec') for p in sys.argv[1:]]"
     $stagedCompileOutput = & (Join-Path $portablePython "python.exe") -W ignore -c $compileProbe `
         (Join-Path $stageRoot "morphly_supervisor.py") `
+        (Join-Path $stageRoot "morphly_updater.py") `
         (Join-Path $stageRoot "server\MMVCServerSIO.py") 2>&1
     $stagedCompileExitCode = $LASTEXITCODE
 } finally {

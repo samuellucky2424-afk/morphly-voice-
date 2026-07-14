@@ -9,6 +9,16 @@
       "purpose": "Local dashboard and engine supervisor"
     },
     {
+      "path": "morphly_updater.py",
+      "kind": "file",
+      "purpose": "Verified GitHub Releases updater backend"
+    },
+    {
+      "path": "morphly_update_helper.ps1",
+      "kind": "file",
+      "purpose": "Detached Windows installer handoff helper"
+    },
+    {
       "path": "start_http.bat",
       "kind": "file",
       "purpose": "Application launcher"
