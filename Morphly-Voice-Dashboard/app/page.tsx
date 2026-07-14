@@ -1655,7 +1655,6 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
             <div className="account-detail-row"><span>Access</span><strong>{session.role === "admin" ? "Administrator" : "Voice workspace"}</strong></div>
             <div className="account-detail-row"><span>Status</span><strong>{session.status}</strong></div>
             <div className="account-detail-row"><span>Credits</span><strong>{credits.toLocaleString()}</strong></div>
-            <div className="account-note"><ShieldCheck size={17} /><span>Firebase protects this sign-in. Your sessions, credits, and notifications are isolated by your verified account ID.</span></div>
             <button className="secondary-button modal-action" type="button" onClick={() => void signOut()}><LogOut size={16} /> Sign out</button>
           </div>
         </Modal>
