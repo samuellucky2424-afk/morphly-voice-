@@ -45,14 +45,28 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { ChangeEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AdminDashboard from "./AdminDashboard";
 import { AuthGate, usePlatformAuth } from "./AuthGate";
 import {
+  activateUsageSession,
+  clearUserSessions,
+  getBillingConfig,
+  getNotifications,
+  getPaymentStatus,
   getUserBootstrap,
+  getUserSessions,
+  heartbeatUsageSession,
   initializePayment,
+  markNotificationsRead,
+  prepareUsageSession,
+  registerPushToken,
   sendClientEvent,
   sendHeartbeat,
+  stopUsageSession,
+  stopUsageSessionOnPageHide,
+  unregisterPushToken,
+  verifyPayment,
 } from "./cloud-api";
 import {
   EngineApiError,
@@ -66,10 +80,20 @@ import {
   selectVoice as selectEngineVoice,
   startConversion,
   stopConversion,
+  stopConversionOnPageHide,
+  setEngineAuthorizationToken,
   switchGatewayMode,
   updateRuntimeSettings,
 } from "./engine-api";
-import type { PlatformSession, PublicNotification, SupportConfig } from "./platform-types";
+import { disablePushNotifications, enablePushNotifications, type EnabledPushNotifications } from "./push-notifications";
+import type {
+  BillingConfig,
+  FlutterwaveInlineInitialization,
+  PlatformSession,
+  PublicNotification,
+  SupportConfig,
+  UserSessionRecord,
+} from "./platform-types";
 
 type Voice = EngineVoice & {
   type: string;
@@ -80,20 +104,12 @@ type Voice = EngineVoice & {
 
 type NavigationTarget = "dashboard" | "library" | "models" | "history" | "account" | "settings";
 
-type SessionRecord = {
-  id: string;
-  startedAt: string;
-  endedAt: string;
-  durationSeconds: number;
-  engineMode: EngineMode;
-  voiceName: string;
-  modelName: string;
-  sampleRate: number;
-  chunkSize: number;
-  latencyMs: number | null;
-};
+type SessionRecord = UserSessionRecord;
 
-type ActiveSessionSnapshot = Omit<SessionRecord, "id" | "endedAt" | "durationSeconds">;
+type ActiveSessionSnapshot = Pick<
+  SessionRecord,
+  "startedAt" | "engineMode" | "voiceName" | "modelName" | "sampleRate" | "chunkSize" | "latencyMs"
+>;
 
 type InstalledModel = {
   key: string;
@@ -109,7 +125,7 @@ type InstalledModel = {
 
 type VoiceWorkspaceProps = {
   session: PlatformSession;
-  token: string | null;
+  token: string;
   onSignOut: () => Promise<void> | void;
   onRefreshSession: () => Promise<void> | void;
 };
@@ -155,8 +171,64 @@ const navigationHeadings: Record<NavigationTarget, { eyebrow: string; title: str
   settings: { eyebrow: "Engine configuration", title: "Settings" },
 };
 
-const SESSION_HISTORY_KEY = "morphly.sessionHistory.v1";
-const LOCAL_PROFILE_KEY = "morphly.localProfile.v1";
+const LEGACY_SESSION_HISTORY_KEY = "morphly.sessionHistory.v1";
+const DEVICE_ID_KEY = "morphly.deviceId.v1";
+const FLUTTERWAVE_SCRIPT_URL = "https://checkout.flutterwave.com/v3.js";
+
+type FlutterwaveResponse = {
+  id?: number;
+  transaction_id?: number;
+  transactionId?: number;
+  status?: string;
+  tx_ref?: string;
+};
+
+type FlutterwaveModal = { close?: () => void };
+
+declare global {
+  interface Window {
+    FlutterwaveCheckout?: (options: Record<string, unknown>) => FlutterwaveModal;
+  }
+}
+
+let flutterwaveScriptPromise: Promise<void> | null = null;
+let volatileDeviceId = "";
+
+function loadFlutterwaveCheckout() {
+  if (window.FlutterwaveCheckout) return Promise.resolve();
+  if (flutterwaveScriptPromise) return flutterwaveScriptPromise;
+  flutterwaveScriptPromise = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>(`script[src="${FLUTTERWAVE_SCRIPT_URL}"]`);
+    const script = existing || document.createElement("script");
+    const onLoad = () => window.FlutterwaveCheckout ? resolve() : reject(new Error("Flutterwave checkout did not initialize."));
+    const onError = () => reject(new Error("Flutterwave checkout could not be loaded. Check your internet connection."));
+    script.addEventListener("load", onLoad, { once: true });
+    script.addEventListener("error", onError, { once: true });
+    if (!existing) {
+      script.src = FLUTTERWAVE_SCRIPT_URL;
+      script.async = true;
+      document.head.appendChild(script);
+    }
+  }).catch((error) => {
+    flutterwaveScriptPromise = null;
+    throw error;
+  });
+  return flutterwaveScriptPromise;
+}
+
+function deviceId() {
+  if (volatileDeviceId) return volatileDeviceId;
+  try {
+    const existing = window.localStorage.getItem(DEVICE_ID_KEY);
+    if (existing) return existing;
+    const created = crypto.randomUUID();
+    window.localStorage.setItem(DEVICE_ID_KEY, created);
+    return created;
+  } catch {
+    volatileDeviceId = crypto.randomUUID();
+    return volatileDeviceId;
+  }
+}
 
 function formatTime(totalSeconds: number) {
   const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
@@ -243,8 +315,12 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
   const [supportConfig, setSupportConfig] = useState<SupportConfig>(emptySupportConfig);
   const [cloudMessage, setCloudMessage] = useState("");
   const [paymentBusy, setPaymentBusy] = useState("");
+  const [selectedPlanId, setSelectedPlanId] = useState("");
+  const [billingConfig, setBillingConfig] = useState<BillingConfig | null>(null);
   const [sessionHistory, setSessionHistory] = useState<SessionRecord[]>([]);
-  const [localDataLoaded, setLocalDataLoaded] = useState(false);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushEnabled, setPushEnabled] = useState(false);
   const [toast, setToast] = useState("");
   const [voiceTab, setVoiceTab] = useState<"my" | "featured">("my");
   const [search, setSearch] = useState("");
@@ -257,8 +333,22 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
   const voiceSectionRef = useRef<HTMLElement>(null);
   const settingsSectionRef = useRef<HTMLElement>(null);
   const activeSessionRef = useRef<ActiveSessionSnapshot | null>(null);
+  const activeUsageSessionIdRef = useRef<string | null>(null);
+  const usageSequenceRef = useRef(0);
+  const usageFailureCountRef = useRef(0);
+  const usageLeaseDeadlineRef = useRef(0);
+  const sessionStopInProgressRef = useRef(false);
+  const stopActiveSessionRef = useRef<(reason: "user" | "credits" | "billing") => Promise<void>>(async () => undefined);
+  const latestLatencyRef = useRef<number | null>(null);
+  const pushRegistrationRef = useRef<EnabledPushNotifications | null>(null);
+  const knownNotificationIdsRef = useRef<Set<string>>(new Set());
   const voiceRowRefs = useRef<Partial<Record<EngineVoice["gender"], HTMLDivElement | null>>>({});
-  const telemetrySessionId = `morphly-${useId()}`;
+  const presenceSessionId = `morphly-presence-${session.uid}`;
+
+  useEffect(() => {
+    setEngineAuthorizationToken(token);
+    return () => setEngineAuthorizationToken(null);
+  }, [token]);
 
   const updateVoiceRowEdges = useCallback((gender: EngineVoice["gender"]) => {
     const row = voiceRowRefs.current[gender];
@@ -315,7 +405,7 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
       setGatewayStatus(status);
       setEngineMode(status.mode);
       if (!status.ready || status.switching) {
-        setEngineError(status.error || status.message || "The selected engine is still starting.");
+        setEngineError(status.error || "");
         setEngineInfo(null);
         setVoices([]);
         return;
@@ -343,7 +433,7 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
         const status = await getGatewayStatus();
         setGatewayStatus(status);
         if (status.mode !== engineMode || (status.ready && !engineInfo)) void refreshEngine(true);
-        if (!status.ready && status.message) setEngineError(status.error || status.message);
+        if (!status.ready) setEngineError(status.error || "");
       } catch {
         // The refresh button exposes connection errors without noisy polling toasts.
       }
@@ -377,54 +467,110 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
   }, [isBusy, toast]);
 
   useEffect(() => {
+    try {
+      window.localStorage.removeItem(LEGACY_SESSION_HISTORY_KEY);
+    } catch {
+      // Private browsing/storage policies must not prevent the authenticated workspace from opening.
+    }
+    const nextName = session.displayName || session.email.split("@")[0] || "Morphly creator";
     const timeout = window.setTimeout(() => {
-      try {
-        if (session.source === "local") {
-          const savedProfile = JSON.parse(window.localStorage.getItem(LOCAL_PROFILE_KEY) || "null") as { displayName?: unknown } | null;
-          if (typeof savedProfile?.displayName === "string" && savedProfile.displayName.trim()) {
-            setProfileName(savedProfile.displayName.trim());
-            setProfileDraft(savedProfile.displayName.trim());
-          }
-        } else {
-          setProfileName(session.displayName || session.email.split("@")[0] || "Morphly creator");
-          setProfileDraft(session.displayName || session.email.split("@")[0] || "Morphly creator");
-        }
-        const savedHistory = JSON.parse(window.localStorage.getItem(SESSION_HISTORY_KEY) || "[]") as unknown;
-        if (Array.isArray(savedHistory)) setSessionHistory(savedHistory.slice(0, 50) as SessionRecord[]);
-      } catch {
-        // Corrupt local dashboard data should never prevent the voice engine from loading.
-      } finally {
-        setLocalDataLoaded(true);
-      }
+      setProfileName(nextName);
+      setProfileDraft(nextName);
+      setCredits(session.credits);
     }, 0);
     return () => window.clearTimeout(timeout);
-  }, [session.displayName, session.email, session.source]);
+  }, [session.credits, session.displayName, session.email, session.uid]);
 
   useEffect(() => {
-    if (!localDataLoaded || session.source !== "local") return;
-    window.localStorage.setItem(LOCAL_PROFILE_KEY, JSON.stringify({ displayName: profileName }));
-  }, [localDataLoaded, profileName, session.source]);
+    latestLatencyRef.current = latencyMs;
+  }, [latencyMs]);
+
+  const refreshNotifications = useCallback(async (announceNew = false) => {
+    const result = await getNotifications(token);
+    if (announceNew) {
+      const nextUnread = result.notifications.filter(
+        (notification) => !notification.isRead && !knownNotificationIdsRef.current.has(notification.id),
+      );
+      if (nextUnread.length && "Notification" in window && Notification.permission === "granted") {
+        const newest = nextUnread[0];
+        try {
+          new Notification(newest.title, { body: newest.message, icon: "/morphly-icon-192.png", tag: newest.id });
+        } catch {
+          // The in-app inbox remains authoritative if the OS rejects a desktop notification.
+        }
+      }
+    }
+    knownNotificationIdsRef.current = new Set(result.notifications.map((notification) => notification.id));
+    setNotifications(result.notifications);
+    return result;
+  }, [token]);
 
   useEffect(() => {
-    if (!localDataLoaded) return;
-    window.localStorage.setItem(SESSION_HISTORY_KEY, JSON.stringify(sessionHistory.slice(0, 50)));
-  }, [localDataLoaded, sessionHistory]);
-
-  useEffect(() => {
-    if (!token) return;
-
     let cancelled = false;
-    void getUserBootstrap(token).then((bootstrap) => {
+    void Promise.allSettled([
+      getUserBootstrap(token),
+      getUserSessions(token),
+      getBillingConfig(token),
+    ]).then(([bootstrapResult, historyResult, billingResult]) => {
       if (cancelled) return;
-      setCredits(bootstrap.session.credits);
-      setNotifications(bootstrap.notifications);
-      setSupportConfig(bootstrap.support);
-      setCloudMessage("");
-    }).catch((error) => {
-      if (!cancelled) setCloudMessage(readableError(error));
+      const failures: string[] = [];
+      if (bootstrapResult.status === "fulfilled") {
+        const bootstrap = bootstrapResult.value;
+        setCredits(bootstrap.session.credits);
+        setNotifications(bootstrap.notifications);
+        setSupportConfig(bootstrap.support);
+        knownNotificationIdsRef.current = new Set(bootstrap.notifications.map((notification) => notification.id));
+      } else failures.push(readableError(bootstrapResult.reason));
+      if (historyResult.status === "fulfilled") setSessionHistory(historyResult.value);
+      else failures.push(`Session history: ${readableError(historyResult.reason)}`);
+      if (billingResult.status === "fulfilled") {
+        setBillingConfig(billingResult.value);
+        setSelectedPlanId((current) => current || billingResult.value.plans[0]?.id || "");
+      } else failures.push(`Billing: ${readableError(billingResult.reason)}`);
+      setCloudMessage(failures.join(" "));
     });
     return () => { cancelled = true; };
   }, [token]);
+
+  useEffect(() => {
+    const refresh = () => void refreshNotifications(true).catch(() => undefined);
+    const timer = window.setInterval(refresh, 30_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [refreshNotifications]);
+
+  useEffect(() => {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    let cancelled = false;
+    const currentDeviceId = deviceId();
+    void enablePushNotifications({
+      onToken: async (pushToken) => {
+        await registerPushToken(token, {
+          token: pushToken,
+          deviceId: currentDeviceId,
+          userAgent: navigator.userAgent,
+        });
+      },
+      onForegroundMessage: () => void refreshNotifications(true).catch(() => undefined),
+    }).then((registration) => {
+      if (cancelled) {
+        registration.stopForegroundMessages();
+        return;
+      }
+      pushRegistrationRef.current = registration;
+      setPushEnabled(true);
+    }).catch(() => {
+      // The in-app authenticated inbox still works when background push is unavailable.
+    });
+    return () => {
+      cancelled = true;
+      pushRegistrationRef.current?.stopForegroundMessages();
+      pushRegistrationRef.current = null;
+    };
+  }, [refreshNotifications, token]);
 
   const selectVoice = async (voice: Voice) => {
     if (isRunning) {
@@ -447,103 +593,185 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
     }
   };
 
-  const toggleSession = async () => {
-    if (isBusy || !gatewayStatus?.ready || !engineInfo) return;
-    if (!isRunning && !selectedVoice) {
-      setToast("Choose a loaded voice model first.");
-      return;
-    }
-    const wasRunning = isRunning;
+  const stopActiveSession = useCallback(async (reason: "user" | "credits" | "billing") => {
+    if (sessionStopInProgressRef.current) return;
+    const snapshot = activeSessionRef.current;
+    const usageSessionId = activeUsageSessionIdRef.current;
+    sessionStopInProgressRef.current = true;
+    usageLeaseDeadlineRef.current = 0;
     setIsBusy(true);
     setEngineError("");
     try {
-      const info = wasRunning
-        ? await stopConversion(engineMode)
-        : await startConversion(engineMode, engineInfo, selectedVoice!, {
-            inputDevice,
-            outputDevice,
-            sampleRate,
-            inputGain: inputGain / 100,
-            outputGain: outputGain / 100,
-            pitch,
-            indexRatio: indexRate / 100,
-            chunkSize,
-            f0Detector,
-          });
-      applyEngineInfo(info);
-      if (wasRunning) {
-        const snapshot = activeSessionRef.current;
-        if (snapshot) {
-          const endedAt = new Date();
-          const elapsedSeconds = Math.max(1, Math.round((endedAt.getTime() - new Date(snapshot.startedAt).getTime()) / 1000));
-          const record: SessionRecord = {
-            ...snapshot,
-            id: `session-${endedAt.getTime()}`,
-            endedAt: endedAt.toISOString(),
-            durationSeconds: Math.max(seconds, elapsedSeconds),
-          };
-          setSessionHistory((current) => [record, ...current].slice(0, 50));
-          if (token) {
-            void sendClientEvent(token, {
-              event: "session_stopped",
-              category: "voice_session",
-              sessionId: telemetrySessionId,
-              engine: snapshot.engineMode,
-              message: `${snapshot.voiceName} session completed.`,
-              metadata: {
-                voiceName: snapshot.voiceName,
-                modelName: snapshot.modelName,
-                durationSeconds: record.durationSeconds,
-                sampleRate: snapshot.sampleRate,
-                chunkSize: snapshot.chunkSize,
-                latencyMs: snapshot.latencyMs,
-              },
-            }).catch(() => undefined);
-          }
-        }
-        activeSessionRef.current = null;
-      } else {
-        setSeconds(0);
-        activeSessionRef.current = {
-          startedAt: new Date().toISOString(),
-          engineMode,
-          voiceName: selectedVoice!.name,
-          modelName: selectedVoice!.modelName,
-          sampleRate,
-          chunkSize,
-          latencyMs,
-        };
-        if (token) {
-          void sendClientEvent(token, {
-            event: "session_started",
-            category: "voice_session",
-            sessionId: telemetrySessionId,
-            engine: engineMode,
-            message: `${selectedVoice!.name} session started.`,
-            metadata: {
-              voiceName: selectedVoice!.name,
-              modelName: selectedVoice!.modelName,
-              sampleRate,
-              chunkSize,
-            },
-          }).catch(() => undefined);
-        }
+      if (!snapshot || !usageSessionId) {
+        const info = await stopConversion(engineMode);
+        applyEngineInfo(info);
+        setToast("A previous unmetered engine session was stopped. Start again to connect it to this account.");
+        return;
       }
-      setToast(wasRunning ? "Voice conversion stopped and saved to history." : "Live voice conversion started.");
+      const info = await stopConversion(snapshot.engineMode);
+      applyEngineInfo(info);
+      let chargedCredits = 0;
+      try {
+        const usage = await stopUsageSession(token, {
+          sessionId: usageSessionId,
+          sequence: ++usageSequenceRef.current,
+          latencyMs: snapshot.latencyMs,
+        });
+        setCredits(usage.creditsRemaining);
+        chargedCredits = usage.totalChargedCredits;
+      } catch (error) {
+        setCloudMessage(`Usage record: ${readableError(error)}`);
+      }
+
+      const endedAt = new Date();
+      const elapsedSeconds = Math.max(1, Math.round((endedAt.getTime() - new Date(snapshot.startedAt).getTime()) / 1000));
+      const record: SessionRecord = {
+        ...snapshot,
+        id: usageSessionId,
+        clientSessionId: usageSessionId,
+        endedAt: endedAt.toISOString(),
+        durationSeconds: Math.max(seconds, elapsedSeconds),
+        status: reason === "user" ? "completed" : reason === "credits" ? "credit_exhausted" : "billing_unavailable",
+        creditsCharged: chargedCredits,
+      };
+      setSessionHistory((current) => [record, ...current.filter((item) => item.clientSessionId !== usageSessionId)].slice(0, 50));
+      await sendClientEvent(token, {
+        event: "session_stopped",
+        category: "voice_session",
+        sessionId: usageSessionId,
+        engine: snapshot.engineMode,
+        message: `${snapshot.voiceName} session completed.`,
+        metadata: {
+          voiceName: snapshot.voiceName,
+          modelName: snapshot.modelName,
+          durationSeconds: record.durationSeconds,
+          sampleRate: snapshot.sampleRate,
+          chunkSize: snapshot.chunkSize,
+          latencyMs: snapshot.latencyMs,
+          stopReason: reason,
+        },
+      }).catch(() => undefined);
+      activeSessionRef.current = null;
+      activeUsageSessionIdRef.current = null;
+      setSeconds(0);
+      if (reason === "credits") {
+        setCreditsOpen(true);
+        setToast("Your remaining credits were used. Add credits to start another session.");
+      } else if (reason === "billing") {
+        setToast("Voice conversion stopped because usage billing could not be verified.");
+      } else {
+        setToast("Voice conversion stopped and saved to your account history.");
+      }
+      window.setTimeout(() => void getUserSessions(token).then(setSessionHistory).catch(() => undefined), 750);
     } catch (error) {
       const message = readableError(error);
       setEngineError(message);
       setToast(message);
-      if (token) {
-        void sendClientEvent(token, {
-          event: "engine_error",
-          category: "voice_engine",
-          level: "error",
-          sessionId: telemetrySessionId,
-          engine: engineMode,
-          message,
-        }).catch(() => undefined);
+      await refreshEngine(true);
+    } finally {
+      sessionStopInProgressRef.current = false;
+      setIsBusy(false);
+    }
+  }, [applyEngineInfo, engineMode, refreshEngine, seconds, token]);
+
+  useEffect(() => {
+    stopActiveSessionRef.current = stopActiveSession;
+  }, [stopActiveSession]);
+
+  const toggleSession = async () => {
+    if (isBusy || !gatewayStatus?.ready || !engineInfo) return;
+    if (isRunning) {
+      await stopActiveSession("user");
+      return;
+    }
+    if (!selectedVoice) {
+      setToast("Choose a loaded voice model first.");
+      return;
+    }
+    const requiredCredits = billingConfig?.creditsPerPeriod ?? 2;
+    if (credits < requiredCredits) {
+      setCreditsOpen(true);
+      setToast(`At least ${requiredCredits} credits are required to start voice conversion.`);
+      return;
+    }
+
+    const usageSessionId = `morphly-${crypto.randomUUID()}`;
+    let prepared = false;
+    let localAudioStarted = false;
+    setIsBusy(true);
+    setEngineError("");
+    try {
+      const preparedUsage = await prepareUsageSession(token, {
+        sessionId: usageSessionId,
+        engine: engineMode,
+        voiceName: selectedVoice.name,
+        modelName: selectedVoice.modelName,
+        sampleRate,
+        chunkSize,
+        latencyMs,
+      });
+      prepared = true;
+      setCredits(preparedUsage.creditsRemaining);
+      const info = await startConversion(engineMode, engineInfo, selectedVoice, {
+        inputDevice,
+        outputDevice,
+        sampleRate,
+        inputGain: inputGain / 100,
+        outputGain: outputGain / 100,
+        pitch,
+        indexRatio: indexRate / 100,
+        chunkSize,
+        f0Detector,
+      });
+      if (!info.running) throw new EngineApiError("The engine did not confirm that live audio started.");
+      localAudioStarted = true;
+      const activated = await activateUsageSession(token, usageSessionId);
+      if (!activated.allowed) {
+        await stopConversion(engineMode).catch(() => undefined);
+        localAudioStarted = false;
+        throw new Error("Usage billing did not authorize this voice session.");
       }
+      applyEngineInfo(info);
+      setCredits(activated.creditsRemaining);
+      setSeconds(0);
+      usageSequenceRef.current = 0;
+      usageFailureCountRef.current = 0;
+      usageLeaseDeadlineRef.current = Date.now() + 15_000;
+      activeUsageSessionIdRef.current = usageSessionId;
+      activeSessionRef.current = {
+        startedAt: new Date().toISOString(),
+        engineMode,
+        voiceName: selectedVoice.name,
+        modelName: selectedVoice.modelName,
+        sampleRate,
+        chunkSize,
+        latencyMs,
+      };
+      void sendClientEvent(token, {
+        event: "session_started",
+        category: "voice_session",
+        sessionId: usageSessionId,
+        engine: engineMode,
+        message: `${selectedVoice.name} session started.`,
+        metadata: { voiceName: selectedVoice.name, modelName: selectedVoice.modelName, sampleRate, chunkSize },
+      }).catch(() => undefined);
+      setToast(`Live voice conversion started. Billing is ${requiredCredits} credits per 10-second connection block.`);
+    } catch (error) {
+      if (localAudioStarted) await stopConversion(engineMode).catch(() => undefined);
+      if (prepared) {
+        void stopUsageSession(token, { sessionId: usageSessionId, sequence: 0, latencyMs }).catch(() => undefined);
+      }
+      const message = readableError(error);
+      setEngineError(message);
+      setToast(message);
+      void sendClientEvent(token, {
+        event: "engine_error",
+        category: "voice_engine",
+        level: "error",
+        sessionId: usageSessionId,
+        engine: engineMode,
+        message,
+      }).catch(() => undefined);
       await refreshEngine(true);
     } finally {
       setIsBusy(false);
@@ -551,7 +779,10 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
   };
 
   const switchEngine = async (mode: EngineMode) => {
-    if (mode === engineMode || isBusy) return;
+    if (mode === engineMode || isBusy || isRunning) {
+      if (isRunning) setToast("Stop voice conversion before switching engines.");
+      return;
+    }
     setIsBusy(true);
     setEngineError("");
     setVoices([]);
@@ -567,15 +798,13 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
       applyEngineInfo(info);
       setEngineError("");
       setToast(`${mode === "rvc" ? "RVC" : "Beatrice V2"} is ready.`);
-      if (token) {
-        void sendClientEvent(token, {
-          event: "engine_switched",
-          category: "voice_engine",
-          sessionId: telemetrySessionId,
-          engine: mode,
-          message: `${mode === "rvc" ? "RVC" : "Beatrice V2"} selected.`,
-        }).catch(() => undefined);
-      }
+      void sendClientEvent(token, {
+        event: "engine_switched",
+        category: "voice_engine",
+        sessionId: activeUsageSessionIdRef.current || presenceSessionId,
+        engine: mode,
+        message: `${mode === "rvc" ? "RVC" : "Beatrice V2"} selected.`,
+      }).catch(() => undefined);
     } catch (error) {
       setEngineError(readableError(error));
       await refreshEngine(true);
@@ -615,47 +844,289 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
     event.target.value = "";
   };
 
-  const beginCheckout = async (planId: string) => {
-    if (!token) {
-      setCloudMessage("Sign in with your Morphly account to purchase credits through Flutterwave.");
-      return;
+  const reconcilePaymentStatus = async (txRef: string, attempts = 6) => {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        const status = await getPaymentStatus(token, txRef);
+        if (status.credited) {
+          const bootstrap = await getUserBootstrap(token);
+          setCredits(status.newBalance ?? bootstrap.session.credits);
+          setCloudMessage("");
+          setToast("Payment confirmed and credits added.");
+          setCreditsOpen(false);
+          await onRefreshSession();
+          return true;
+        }
+        if (new Set(["failed", "cancelled", "canceled"]).has(status.status.toLowerCase())) return false;
+      } catch {
+        // A webhook may still complete the purchase; retry briefly before asking the user to refresh.
+      }
+      if (attempt + 1 < attempts) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+      }
     }
+    return false;
+  };
+
+  const beginCheckout = async (planId: string) => {
     setPaymentBusy(planId);
     setCloudMessage("");
+    let checkoutOpened = false;
+    let callbackReceived = false;
     try {
+      const latestBilling = await getBillingConfig(token);
+      const displayedPlan = billingConfig?.plans.find((plan) => plan.id === planId);
+      const latestPlan = latestBilling.plans.find((plan) => plan.id === planId && plan.enabled);
+      setBillingConfig(latestBilling);
+      if (!latestPlan) {
+        setSelectedPlanId(latestBilling.plans[0]?.id || "");
+        throw new Error("That credit package is no longer available. Review the current packages and choose again.");
+      }
+      if (
+        !displayedPlan ||
+        latestBilling.version !== billingConfig?.version ||
+        latestBilling.currency !== billingConfig?.currency ||
+        latestPlan.amountMinor !== displayedPlan.amountMinor ||
+        latestPlan.credits !== displayedPlan.credits
+      ) {
+        setSelectedPlanId(latestPlan.id);
+        throw new Error("Credit-package pricing changed. Review the updated amount, then click Proceed to payment again.");
+      }
       const payment = await initializePayment(token, {
         planId,
-        returnUrl: `${window.location.origin}${window.location.pathname}`,
+        expectedBillingVersion: latestBilling.version,
+        expectedAmountMinor: latestPlan.amountMinor,
+        expectedCurrency: latestBilling.currency,
+        checkoutMode: "inline",
       });
+      if (!payment.inline) throw new Error("Flutterwave Inline did not return a checkout configuration.");
+      await loadFlutterwaveCheckout();
+      if (!window.FlutterwaveCheckout) throw new Error("Flutterwave checkout is unavailable.");
+      const inline: FlutterwaveInlineInitialization = payment.inline;
+      const modal = window.FlutterwaveCheckout({
+        public_key: inline.publicKey,
+        tx_ref: inline.txRef,
+        amount: inline.amount,
+        currency: inline.currency,
+        payment_options: "card,banktransfer,ussd",
+        customer: inline.customer,
+        meta: inline.meta,
+        customizations: inline.customizations,
+        callback: async (response: FlutterwaveResponse) => {
+          callbackReceived = true;
+          modal?.close?.();
+          const transactionId = Number(response.transaction_id ?? response.transactionId ?? response.id);
+          if (!Number.isSafeInteger(transactionId) || transactionId <= 0) {
+            setCloudMessage("Flutterwave returned an invalid transaction response. No credits were added.");
+            setPaymentBusy("");
+            return;
+          }
+          setPaymentBusy(planId);
+          try {
+            const verified = await verifyPayment(token, transactionId, inline.txRef);
+            if (verified.newBalance !== null) setCredits(verified.newBalance);
+            const bootstrap = await getUserBootstrap(token);
+            setCredits(bootstrap.session.credits);
+            setToast(verified.duplicate ? "This payment was already verified." : "Payment verified and credits added.");
+            setCreditsOpen(false);
+            await onRefreshSession();
+          } catch (error) {
+            const recovered = await reconcilePaymentStatus(inline.txRef, 6);
+            if (!recovered) setCloudMessage(`Payment verification: ${readableError(error)} Your signed webhook can still confirm it; reopen Credits shortly to refresh.`);
+          } finally {
+            setPaymentBusy("");
+          }
+        },
+        onclose: () => {
+          if (callbackReceived) {
+            setPaymentBusy("");
+            return;
+          }
+          setPaymentBusy(planId);
+          void reconcilePaymentStatus(inline.txRef, 6).then((recovered) => {
+            if (!recovered) setCloudMessage("Payment window closed. If you completed payment, the signed Flutterwave webhook may still add the credits shortly.");
+          }).finally(() => setPaymentBusy(""));
+        },
+      });
+      checkoutOpened = true;
       void sendClientEvent(token, {
         event: "payment_opened",
         category: "payment",
         message: `Flutterwave checkout opened for ${planId}.`,
         metadata: { planId, reference: payment.reference },
       }).catch(() => undefined);
-      window.open(payment.checkoutUrl, "_blank", "noopener,noreferrer");
-      setCreditsOpen(false);
-      setToast("Flutterwave checkout opened. Your balance updates after payment verification.");
-      window.setTimeout(() => void onRefreshSession(), 2500);
+      setToast("Flutterwave secure payment opened.");
     } catch (error) {
       setCloudMessage(readableError(error));
     } finally {
-      setPaymentBusy("");
+      // Keep the package controls locked until Flutterwave closes or invokes
+      // the verification callback. This prevents accidental duplicate checkouts.
+      if (!checkoutOpened) setPaymentBusy("");
+    }
+  };
+
+  const openNotifications = async () => {
+    setNotificationsOpen(true);
+    const unreadIds = notifications.filter((notification) => !notification.isRead).map((notification) => notification.id);
+    if (!unreadIds.length) return;
+    try {
+      await markNotificationsRead(token, unreadIds);
+      await refreshNotifications(false);
+    } catch (error) {
+      setCloudMessage(`Notifications: ${readableError(error)}`);
+    }
+  };
+
+  const enableDesktopNotifications = async () => {
+    setPushBusy(true);
+    try {
+      const currentDeviceId = deviceId();
+      const registration = await enablePushNotifications({
+        onToken: async (pushToken) => {
+          await registerPushToken(token, {
+            token: pushToken,
+            deviceId: currentDeviceId,
+            userAgent: navigator.userAgent,
+          });
+        },
+        onForegroundMessage: () => void refreshNotifications(true).catch(() => undefined),
+      });
+      pushRegistrationRef.current = registration;
+      setPushEnabled(true);
+      setToast("Desktop and push notifications are enabled.");
+    } catch (error) {
+      setCloudMessage(`Push notifications: ${readableError(error)}`);
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  const signOut = async () => {
+    if (isRunning) await stopActiveSession("user");
+    const currentDeviceId = deviceId();
+    try {
+      if (pushRegistrationRef.current) {
+        await pushRegistrationRef.current.disable({
+          onTokenRevoked: async () => {
+            await unregisterPushToken(token, currentDeviceId);
+          },
+        });
+      } else {
+        await unregisterPushToken(token, currentDeviceId).catch(() => undefined);
+        await disablePushNotifications().catch(() => undefined);
+      }
+    } finally {
+      pushRegistrationRef.current = null;
+      await onSignOut();
+    }
+  };
+
+  const clearHistory = async () => {
+    setHistoryBusy(true);
+    try {
+      let result = await clearUserSessions(token);
+      let rounds = 1;
+      while (result.moreRemaining && rounds < 10) {
+        result = await clearUserSessions(token);
+        rounds += 1;
+      }
+      setSessionHistory([]);
+      setToast("Your account session history was cleared.");
+    } catch (error) {
+      setCloudMessage(`Session history: ${readableError(error)}`);
+    } finally {
+      setHistoryBusy(false);
     }
   };
 
   const engineReady = Boolean(gatewayStatus?.ready && engineInfo && !engineError);
+  const engineStarting = !engineReady && !engineError && (!gatewayStatus?.ready || gatewayStatus?.switching || isBusy);
   const engineLabel = engineMode === "rvc" ? "Morphly RVC Engine" : "Morphly Beatrice V2 Engine";
+  const unreadNotificationCount = notifications.filter((notification) => !notification.isRead).length;
 
   useEffect(() => {
-    if (!token) return;
+    if (!isRunning) return;
+    let inFlight = false;
+    let cancelled = false;
+    const reportUsage = async () => {
+      const sessionId = activeUsageSessionIdRef.current;
+      if (!sessionId || inFlight || cancelled || sessionStopInProgressRef.current) return;
+      if (Date.now() > usageLeaseDeadlineRef.current) {
+        await stopActiveSessionRef.current("billing");
+        return;
+      }
+      inFlight = true;
+      try {
+        const nextSequence = usageSequenceRef.current + 1;
+        const result = await heartbeatUsageSession(token, {
+          sessionId,
+          sequence: nextSequence,
+          latencyMs: latestLatencyRef.current,
+        });
+        if (cancelled) return;
+        // Advance only after an acknowledged response. If a response is lost,
+        // retrying the same sequence is idempotent on the server.
+        usageSequenceRef.current = nextSequence;
+        usageFailureCountRef.current = 0;
+        usageLeaseDeadlineRef.current = Date.now() + 15_000;
+        setCredits(result.creditsRemaining);
+        if (!result.allowed) {
+          await stopActiveSessionRef.current(result.status === "credit_exhausted" ? "credits" : "billing");
+        }
+      } catch (error) {
+        if (cancelled) return;
+        usageFailureCountRef.current += 1;
+        setCloudMessage(`Usage billing: ${readableError(error)}`);
+        if (usageFailureCountRef.current >= 3) await stopActiveSessionRef.current("billing");
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = window.setInterval(() => void reportUsage(), 5_000);
+    const watchdog = window.setInterval(() => {
+      if (!cancelled && !sessionStopInProgressRef.current && Date.now() > usageLeaseDeadlineRef.current) {
+        void stopActiveSessionRef.current("billing");
+      }
+    }, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.clearInterval(watchdog);
+    };
+  }, [isRunning, token]);
+
+  useEffect(() => {
+    if (!isRunning || activeUsageSessionIdRef.current) return;
+    void stopActiveSessionRef.current("billing");
+  }, [isRunning]);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const stopOnPageHide = () => {
+      sessionStopInProgressRef.current = true;
+      usageLeaseDeadlineRef.current = 0;
+      const usageSessionId = activeUsageSessionIdRef.current;
+      void stopConversionOnPageHide(engineMode).catch(() => undefined);
+      if (usageSessionId) {
+        void stopUsageSessionOnPageHide(token, {
+          sessionId: usageSessionId,
+          sequence: ++usageSequenceRef.current,
+          latencyMs: latestLatencyRef.current,
+        }).catch(() => undefined);
+      }
+    };
+    window.addEventListener("pagehide", stopOnPageHide);
+    return () => window.removeEventListener("pagehide", stopOnPageHide);
+  }, [engineMode, isRunning, token]);
+
+  useEffect(() => {
     const report = () => {
       void sendHeartbeat(token, {
-        sessionId: telemetrySessionId,
+        sessionId: activeUsageSessionIdRef.current || presenceSessionId,
         engine: engineMode,
         status: engineError ? "error" : isRunning ? "live" : engineReady ? "idle" : "starting",
         voiceName: selectedVoice?.name,
-        latencyMs,
+        latencyMs: latestLatencyRef.current,
         appVersion: "0.1.0",
         platform: navigator.userAgent,
       }).catch(() => undefined);
@@ -663,7 +1134,7 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
     report();
     const timer = window.setInterval(report, 30_000);
     return () => window.clearInterval(timer);
-  }, [engineError, engineMode, engineReady, isRunning, latencyMs, selectedVoice?.name, telemetrySessionId, token]);
+  }, [engineError, engineMode, engineReady, isRunning, selectedVoice?.name, presenceSessionId, token]);
 
   const shownVoices = useMemo(() => {
     const ordered = voiceTab === "my" ? voices : [...voices].reverse();
@@ -857,7 +1328,7 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
           </div>
           <button className="profile-row" onClick={() => navigateTo("account")}>
             <span className="avatar-small">{profileInitials}</span>
-            <span><strong>{profileName}</strong><small>{session.source === "cloud" ? session.email : "Local profile"}</small></span>
+            <span><strong>{profileName}</strong><small>{session.email}</small></span>
             <MoreHorizontal size={18} />
           </button>
         </div>
@@ -882,9 +1353,9 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
           </div>
           <div className="topbar-actions">
             <button className="mobile-credit" onClick={() => setCreditsOpen(true)}><Coins size={16} /> {credits.toLocaleString()}</button>
-            <button className="icon-button notification" aria-label="Notifications" onClick={() => setNotificationsOpen(true)}>
+            <button className="icon-button notification" aria-label={`${unreadNotificationCount} unread notifications`} onClick={() => void openNotifications()}>
               <Bell size={19} />
-              {notifications.length > 0 && <span />}
+              {unreadNotificationCount > 0 && <span />}
             </button>
             <button className="secondary-button guide-button" onClick={() => setGuideOpen(true)}><CircleHelp size={17} /> Setup guide</button>
           </div>
@@ -899,14 +1370,14 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
             </div>
             <div className="welcome-actions">
               <div className="engine-mode-switch" role="group" aria-label="Voice engine">
-                <button className={engineMode === "rvc" ? "selected" : ""} disabled={isBusy} onClick={() => void switchEngine("rvc")}><Cpu size={15} /> RVC</button>
-                <button className={engineMode === "beatrice" ? "selected" : ""} disabled={isBusy} onClick={() => void switchEngine("beatrice")}><Sparkles size={15} /> Beatrice V2</button>
+                <button className={engineMode === "rvc" ? "selected" : ""} disabled={isBusy || isRunning} onClick={() => void switchEngine("rvc")}><Cpu size={15} /> RVC</button>
+                <button className={engineMode === "beatrice" ? "selected" : ""} disabled={isBusy || isRunning} onClick={() => void switchEngine("beatrice")}><Sparkles size={15} /> Beatrice V2</button>
               </div>
               <div className={`latency-stat ${engineError ? "has-error" : ""}`}>
                 <span className="pulse-dot" />
                 <div>
                   <small>Engine status</small>
-                  <strong>{isBusy || gatewayStatus?.switching ? gatewayStatus?.message || "Connecting..." : engineReady ? `Ready${latencyMs !== null ? ` · ${Math.round(latencyMs)} ms` : ""}` : "Needs attention"}</strong>
+                  <strong>{engineStarting ? gatewayStatus?.message || "Starting automatically..." : engineReady ? `Ready${latencyMs !== null ? ` · ${Math.round(latencyMs)} ms` : ""}` : "Needs attention"}</strong>
                 </div>
               </div>
             </div>
@@ -1110,7 +1581,7 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
                   <span className="model-panel-icon"><AudioLines size={18} /></span>
                   <div className="model-panel-copy">
                     <span><strong>{model.modelName}</strong>{active && <small>Active</small>}</span>
-                    <p>Slot {model.slot} Â· {model.runtimeLabel}</p>
+                    <p>Slot {model.slot} · {model.runtimeLabel}</p>
                     <div className="model-panel-stats">
                       <span>{model.voiceCount} {model.voiceCount === 1 ? "voice" : "voices"}</span>
                       {model.maleCount > 0 && <span>{model.maleCount} male</span>}
@@ -1141,8 +1612,8 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
                 <span className="history-engine-icon"><Waves size={17} /></span>
                 <div>
                   <strong>{session.voiceName}</strong>
-                  <p>{session.engineMode === "rvc" ? "RVC" : "Beatrice V2"} Â· {session.modelName}</p>
-                  <small>{new Date(session.endedAt).toLocaleString()} Â· {formatTime(session.durationSeconds)}</small>
+                  <p>{session.engineMode === "rvc" ? "RVC" : "Beatrice V2"} · {session.modelName}</p>
+                  <small>{new Date(session.endedAt).toLocaleString()} · {formatTime(session.durationSeconds)}</small>
                 </div>
                 <span className="history-rate">{Math.round(session.sampleRate / 1000)} kHz</span>
               </article>
@@ -1152,9 +1623,9 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
             )}
           </div>
           {sessionHistory.length > 0 && (
-            <button className="clear-history-button" onClick={() => { setSessionHistory([]); setToast("Session history cleared."); }}><Trash2 size={16} /> Clear history</button>
+            <button className="clear-history-button" disabled={historyBusy} onClick={() => void clearHistory()}><Trash2 size={16} /> {historyBusy ? "Clearing..." : "Clear my history"}</button>
           )}
-          <p className="demo-note">Only session details are stored locally. Morphly does not save your audio.</p>
+          <p className="demo-note">Only this signed-in account can access these session details. Morphly does not save your audio.</p>
         </Modal>
       )}
 
@@ -1164,43 +1635,29 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
             <span>{voiceInitials(profileDraft)}</span>
             <div>
               <strong>{profileDraft.trim() || "Morphly creator"}</strong>
-              <small>{session.source === "cloud" ? session.email : "Stored on this computer"}</small>
+              <small>{session.email}</small>
             </div>
           </div>
-          {session.source === "local" ? (
-            <form className="account-form" onSubmit={(event) => {
-              event.preventDefault();
-              const nextName = profileDraft.trim();
-              if (!nextName) return;
-              setProfileName(nextName);
-              setOpenPanel(null);
-              setActiveNavigation("dashboard");
-              setToast("Local profile saved.");
-            }}>
-              <label><span>Display name</span><input value={profileDraft} maxLength={60} autoComplete="name" onChange={(event) => setProfileDraft(event.target.value)} /></label>
-              <div className="account-note"><ShieldCheck size={17} /><span>Local mode keeps voice conversion available without cloud credits, payments, syncing, or administrator access.</span></div>
-              <button className="primary-button modal-action" type="submit" disabled={!profileDraft.trim()}>Save local profile</button>
-              <button className="secondary-button modal-action" type="button" onClick={() => void onSignOut()}><LogOut size={16} /> Sign in to Morphly</button>
-            </form>
-          ) : (
-            <div className="account-form cloud-account-details">
-              <div className="account-detail-row"><span>Email</span><strong>{session.email}</strong></div>
-              <div className="account-detail-row"><span>Access</span><strong>{session.role === "admin" ? "Administrator" : "Voice workspace"}</strong></div>
-              <div className="account-detail-row"><span>Status</span><strong>{session.status}</strong></div>
-              <div className="account-detail-row"><span>Credits</span><strong>{credits.toLocaleString()}</strong></div>
-              <div className="account-note"><ShieldCheck size={17} /><span>Firebase protects this sign-in. Administrative permissions are verified again by the Vercel API.</span></div>
-              <button className="secondary-button modal-action" type="button" onClick={() => void onSignOut()}><LogOut size={16} /> Sign out</button>
-            </div>
-          )}
+          <div className="account-form cloud-account-details">
+            <div className="account-detail-row"><span>Email</span><strong>{session.email}</strong></div>
+            <div className="account-detail-row"><span>Access</span><strong>{session.role === "admin" ? "Administrator" : "Voice workspace"}</strong></div>
+            <div className="account-detail-row"><span>Status</span><strong>{session.status}</strong></div>
+            <div className="account-detail-row"><span>Credits</span><strong>{credits.toLocaleString()}</strong></div>
+            <div className="account-note"><ShieldCheck size={17} /><span>Firebase protects this sign-in. Your sessions, credits, and notifications are isolated by your verified account ID.</span></div>
+            <button className="secondary-button modal-action" type="button" onClick={() => void signOut()}><LogOut size={16} /> Sign out</button>
+          </div>
         </Modal>
       )}
 
       {notificationsOpen && (
         <Modal title="Notifications" icon={<Bell size={20} />} onClose={() => setNotificationsOpen(false)}>
           <p className="modal-intro">Product updates and service notices published by the Morphly team.</p>
+          <button className="secondary-button notification-enable-button" type="button" disabled={pushBusy || pushEnabled} onClick={() => void enableDesktopNotifications()}>
+            <Bell size={16} /> {pushEnabled ? "Push notifications enabled" : pushBusy ? "Enabling notifications..." : "Enable desktop & push alerts"}
+          </button>
           <div className="notification-panel-list">
             {notifications.map((notification) => (
-              <article className={`notification-panel-item notification-${notification.kind}`} key={notification.id}>
+              <article className={`notification-panel-item notification-${notification.kind} ${notification.isRead ? "" : "unread"}`} key={notification.id}>
                 <span><Bell size={17} /></span>
                 <div>
                   <div><strong>{notification.title}</strong><small>{notification.kind}</small></div>
@@ -1215,7 +1672,7 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
               </article>
             ))}
             {!notifications.length && (
-              <div className="panel-empty"><Bell size={22} /><strong>No new notifications</strong><span>{session.source === "local" ? "Sign in to receive Morphly service notices." : "You are all caught up."}</span></div>
+              <div className="panel-empty"><Bell size={22} /><strong>No new notifications</strong><span>You are all caught up.</span></div>
             )}
           </div>
         </Modal>
@@ -1253,21 +1710,21 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
 
       {creditsOpen && (
         <Modal title="Add Morphly credits" icon={<Coins size={20} />} onClose={() => setCreditsOpen(false)}>
-          <p className="modal-intro">Credits are only used while live conversion is active. Your current balance is <strong>{credits.toLocaleString()} credits</strong>.</p>
+          <p className="modal-intro">Live conversion costs <strong>2 credits per 10-second connection block</strong>. The first block is reserved when the engine starts. Your current balance is <strong>{credits.toLocaleString()} credits</strong>.</p>
           <div className="plan-grid">
-            {[
-              { id: "starter", credits: "1,000", price: "$10" },
-              { id: "creator", credits: "2,500", price: "$22", best: true },
-              { id: "studio", credits: "6,000", price: "$48" },
-            ].map((plan) => (
-              <button className={`plan-card ${plan.best ? "best" : ""}`} disabled={Boolean(paymentBusy) || !token} key={plan.id} onClick={() => void beginCheckout(plan.id)}>
-                {plan.best && <small>Best value</small>}
-                <strong>{plan.credits}</strong><span>credits</span><b>{plan.price}</b>
-                {paymentBusy === plan.id && <em>Opening checkout...</em>}
+            {billingConfig?.plans.filter((plan) => plan.enabled).map((plan) => (
+              <button className={`plan-card ${plan.bestValue ? "best" : ""} ${selectedPlanId === plan.id ? "selected" : ""}`} disabled={Boolean(paymentBusy)} key={plan.id} onClick={() => setSelectedPlanId(plan.id)}>
+                {plan.bestValue && <small>Best value</small>}
+                <strong>{plan.credits.toLocaleString()}</strong><span>credits</span>
+                <b>{new Intl.NumberFormat(undefined, { style: "currency", currency: billingConfig.currency }).format(plan.amount)}</b>
               </button>
             ))}
           </div>
-          <p className="demo-note">{token ? "Payments open in Flutterwave and credits are added only after server verification." : "Sign in to your Morphly account to buy credits."}</p>
+          {!billingConfig?.plans.length && <div className="panel-empty"><Coins size={22} /><strong>Credit packages unavailable</strong><span>Ask an administrator to configure billing packages.</span></div>}
+          <button className="primary-button modal-action" type="button" disabled={!selectedPlanId || Boolean(paymentBusy)} onClick={() => void beginCheckout(selectedPlanId)}>
+            {paymentBusy ? "Opening secure payment..." : "Proceed to payment"}
+          </button>
+          <p className="demo-note">Flutterwave opens in a secure inline payment window. Credits are added only after server verification.</p>
         </Modal>
       )}
 
@@ -1286,8 +1743,8 @@ export default function Home() {
 
 function RoleRoutedApplication() {
   const auth = usePlatformAuth();
-  if (!auth.session) return null;
-  if (auth.session.role === "admin" && auth.token) {
+  if (!auth.session || !auth.token) return null;
+  if (auth.session.role === "admin") {
     return <AdminDashboard session={auth.session} token={auth.token} onSignOut={auth.signOut} />;
   }
   return (

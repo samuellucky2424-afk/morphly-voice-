@@ -79,6 +79,11 @@ export class EngineApiError extends Error {
 const REQUEST_TIMEOUT = 12_000;
 const RVC_SETTINGS_TIMEOUT = 60_000;
 const RVC_MODEL_TIMEOUT = 360_000;
+let engineAuthorizationToken = "";
+
+export function setEngineAuthorizationToken(token: string | null) {
+  engineAuthorizationToken = token?.trim() || "";
+}
 
 function numeric(value: unknown, fallback = 0) {
   const number = Number(value);
@@ -110,6 +115,7 @@ async function requestJson<T>(path: string, options: RequestInit = {}, timeout =
       signal: controller.signal,
       headers: {
         Accept: "application/json",
+        ...(engineAuthorizationToken ? { Authorization: `Bearer ${engineAuthorizationToken}` } : {}),
         ...(options.headers || {}),
       },
     });
@@ -598,6 +604,29 @@ export async function stopConversion(mode: EngineMode) {
     await updateBeatriceConfiguration({ pass_through: true });
   }
   return getBeatriceInfo();
+}
+
+export function stopConversionOnPageHide(mode: EngineMode) {
+  const headers: Record<string, string> = {
+    ...(engineAuthorizationToken ? { Authorization: `Bearer ${engineAuthorizationToken}` } : {}),
+  };
+  if (mode === "rvc") {
+    const body = new URLSearchParams({ key: "serverAudioStated", val: "0" });
+    return fetch("/update_settings", {
+      method: "POST",
+      keepalive: true,
+      cache: "no-store",
+      headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body: body.toString(),
+    });
+  }
+  return fetch("/api/local-voice-changer-interface/operation/stop", {
+    method: "POST",
+    keepalive: true,
+    cache: "no-store",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: "null",
+  });
 }
 
 export async function updateRuntimeSettings(

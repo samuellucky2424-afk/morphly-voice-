@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "application": "Morphly Voice",
+  "architecture": "x64",
+  "requirements": [
+    {
+      "path": "morphly_supervisor.py",
+      "kind": "file",
+      "purpose": "Local dashboard and engine supervisor"
+    },
+    {
+      "path": "start_http.bat",
+      "kind": "file",
+      "purpose": "Application launcher"
+    },
+    {
+      "path": "start_engine_mode.bat",
+      "kind": "file",
+      "purpose": "Engine mode launcher"
+    },
+    {
+      "path": ".venv/Scripts/python.exe",
+      "kind": "file",
+      "purpose": "Source Python environment used to assemble the portable runtime"
+    },
+    {
+      "path": "Morphly-Voice-Dashboard/dist-static",
+      "kind": "directory",
+      "patterns": [
+        "index.html",
+        "morphly-icon-16.png",
+        "morphly-icon-32.png",
+        "morphly-icon-48.png",
+        "morphly-icon-192.png"
+      ],
+      "minimumMatches": 5,
+      "purpose": "Built Morphly dashboard and Windows icon sources"
+    },
+    {
+      "path": "client/demo/dist",
+      "kind": "directory",
+      "patterns": [
+        "index.html"
+      ],
+      "minimumMatches": 1,
+      "purpose": "RVC server fallback frontend required during FastAPI initialization"
+    },
+    {
+      "path": "server/MMVCServerSIO.py",
+      "kind": "file",
+      "purpose": "RVC HTTP engine entrypoint"
+    },
+    {
+      "path": "server/voice_changer",
+      "kind": "directory",
+      "minimumFiles": 50,
+      "purpose": "RVC voice-conversion runtime tree"
+    },
+    {
+      "path": "server/model_dir",
+      "kind": "directory",
+      "patterns": [
+        "*.onnx",
+        "*.pth"
+      ],
+      "minimumMatches": 1,
+      "purpose": "At least one distributable RVC voice model"
+    },
+    {
+      "path": "server/pretrain",
+      "kind": "directory",
+      "patterns": [
+        "content_vec_500.onnx"
+      ],
+      "minimumMatches": 1,
+      "purpose": "RVC content-vector runtime model"
+    },
+    {
+      "path": "engines/beatrice-v2/main.exe",
+      "kind": "file",
+      "purpose": "Beatrice V2 engine executable"
+    },
+    {
+      "path": "engines/beatrice-v2/_internal",
+      "kind": "directory",
+      "minimumFiles": 100,
+      "purpose": "Complete Beatrice executable runtime"
+    },
+    {
+      "path": "engines/beatrice-v2/web_front",
+      "kind": "directory",
+      "minimumFiles": 10,
+      "purpose": "Beatrice server resources"
+    },
+    {
+      "path": "engines/beatrice-v2/model_dir",
+      "kind": "directory",
+      "patterns": [
+        "*.toml"
+      ],
+      "minimumMatches": 1,
+      "purpose": "At least one Beatrice V2 voice model"
+    },
+    {
+      "path": "engines/beatrice-v2/model_dir",
+      "kind": "directory",
+      "patterns": [
+        "LICENSE.txt",
+        "LICENSES_BUNDLED.txt"
+      ],
+      "minimumMatches": 2,
+      "purpose": "Beatrice and bundled-component notices"
+    },
+    {
+      "path": "LICENSE",
+      "kind": "file",
+      "purpose": "Application license"
+    },
+    {
+      "path": "LICENSE-NOTICE",
+      "kind": "file",
+      "purpose": "Third-party and model notices"
+    }
+  ],
+  "pythonImports": [
+    "fastapi",
+    "uvicorn",
+    "socketio",
+    "numpy",
+    "librosa",
+    "sounddevice",
+    "onnxruntime",
+    "cryptography",
+    "certifi"
+  ]
+}

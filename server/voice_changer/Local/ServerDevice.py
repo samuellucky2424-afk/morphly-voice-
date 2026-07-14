@@ -1,9 +1,10 @@
+from collections import deque
 from dataclasses import dataclass, asdict
+from threading import Lock
 
 import numpy as np
 from const import SERVER_DEVICE_SAMPLE_RATES
 
-from queue import Queue
 from mods.log_control import VoiceChangaerLogger
 
 from voice_changer.Local.AudioDeviceList import checkSamplingRate, list_audio_device
@@ -74,6 +75,72 @@ EditableServerDeviceSettings = {
 }
 
 
+class _AudioFrameFifo:
+    """Thread-safe mono PCM FIFO shared by PortAudio callbacks."""
+
+    def __init__(self):
+        self._chunks: deque[np.ndarray] = deque()
+        self._chunk_offset = 0
+        self._available_frames = 0
+        self._lock = Lock()
+
+    @staticmethod
+    def _as_mono_float32(samples: np.ndarray) -> np.ndarray:
+        values = np.asarray(samples)
+        if values.ndim == 0:
+            values = values.reshape(1)
+        elif values.ndim > 1:
+            if values.shape[0] == 0:
+                return np.empty(0, dtype=np.float32)
+            channels = values.reshape(values.shape[0], -1)
+            values = channels[:, 0] if channels.shape[1] == 1 else channels.mean(axis=1)
+        return np.asarray(values, dtype=np.float32).reshape(-1).copy()
+
+    def put(self, samples: np.ndarray) -> None:
+        chunk = self._as_mono_float32(samples)
+        if chunk.size == 0:
+            return
+        with self._lock:
+            self._chunks.append(chunk)
+            self._available_frames += int(chunk.size)
+
+    def read(self, frame_count: int) -> np.ndarray:
+        requested_frames = max(0, int(frame_count))
+        output = np.zeros(requested_frames, dtype=np.float32)
+        if requested_frames == 0:
+            return output
+
+        with self._lock:
+            output_offset = 0
+            while output_offset < requested_frames and self._chunks:
+                chunk = self._chunks[0]
+                available_in_chunk = chunk.size - self._chunk_offset
+                copied_frames = min(requested_frames - output_offset, available_in_chunk)
+                output[output_offset : output_offset + copied_frames] = chunk[
+                    self._chunk_offset : self._chunk_offset + copied_frames
+                ]
+                output_offset += copied_frames
+                self._chunk_offset += copied_frames
+                self._available_frames -= copied_frames
+
+                if self._chunk_offset >= chunk.size:
+                    self._chunks.popleft()
+                    self._chunk_offset = 0
+
+        return output
+
+    def clear(self) -> None:
+        with self._lock:
+            self._chunks.clear()
+            self._chunk_offset = 0
+            self._available_frames = 0
+
+    @property
+    def available_frames(self) -> int:
+        with self._lock:
+            return self._available_frames
+
+
 class ServerDeviceCallbacks(Protocol):
     def on_request(self, unpackedData: AudioInOut) -> tuple[AudioInOut, list[Union[int, float]]]:
         ...
@@ -99,8 +166,8 @@ class ServerDevice:
         self.mon_wav = None
         self.serverAudioInputDevices = None
         self.serverAudioOutputDevices = None
-        self.outQueue = Queue()
-        self.monQueue = Queue()
+        self.outQueue = _AudioFrameFifo()
+        self.monQueue = _AudioFrameFifo()
         self.performance = []
 
         # setting change確認用
@@ -131,6 +198,32 @@ class ServerDevice:
     # Callback Section
     ###########################################
 
+    def _clear_audio_buffers(self):
+        self.outQueue.clear()
+        self.monQueue.clear()
+
+    @staticmethod
+    def _write_fifo_to_output(
+        fifo: _AudioFrameFifo,
+        outdata: np.ndarray,
+        frames: int,
+        gain: float,
+    ) -> None:
+        """Fill an output callback buffer without waiting for converted audio."""
+        outdata.fill(0)
+        pcm = fifo.read(frames)
+        writable_frames = min(outdata.shape[0], pcm.size)
+        if writable_frames == 0:
+            return
+
+        normalized = pcm[:writable_frames] * (float(gain) / 32768.0)
+        if outdata.ndim == 1:
+            outdata[:writable_frames] = normalized
+        elif outdata.ndim == 2:
+            outdata[:writable_frames, :] = normalized[:, np.newaxis]
+        else:
+            raise ValueError(f"Unsupported output buffer shape: {outdata.shape}")
+
     def _processData(self, indata: np.ndarray):
         indata = indata * self.settings.serverInputAudioGain
         unpackedData = librosa.to_mono(indata.T) * 32768.0
@@ -152,10 +245,15 @@ class ServerDevice:
             out_wav = self._processDataWithTime(indata)
 
             self.outQueue.put(out_wav)
-            outputChannels = outdata.shape[1]  # Monitorへのアウトプット
-            outdata[:] = np.repeat(out_wav, outputChannels).reshape(-1, outputChannels) / 32768.0
-            outdata[:] = outdata * self.settings.serverMonitorAudioGain
+            self.monQueue.put(out_wav)
+            self._write_fifo_to_output(
+                self.monQueue,
+                outdata,
+                frames,
+                self.settings.serverMonitorAudioGain,
+            )
         except Exception as e:
+            outdata.fill(0)
             print("[Voice Changer] ex:", e)
 
     def audioInput_callback_outQueue(self, indata: np.ndarray, frames, times, status):
@@ -179,26 +277,28 @@ class ServerDevice:
 
     def audioOutput_callback(self, outdata: np.ndarray, frames, times, status):
         try:
-            out_wav = self.outQueue.get()
-            while self.outQueue.qsize() > 0:
-                self.outQueue.get()
-            outputChannels = outdata.shape[1]
-            outdata[:] = np.repeat(out_wav, outputChannels).reshape(-1, outputChannels) / 32768.0
-            outdata[:] = outdata * self.settings.serverOutputAudioGain
+            self._write_fifo_to_output(
+                self.outQueue,
+                outdata,
+                frames,
+                self.settings.serverOutputAudioGain,
+            )
         except Exception as e:
+            outdata.fill(0)
             print("[Voice Changer][ServerDevice][audioOutput_callback]  ex:", e)
             # import traceback
             # traceback.print_exc()
 
     def audioMonitor_callback(self, outdata: np.ndarray, frames, times, status):
         try:
-            mon_wav = self.monQueue.get()
-            while self.monQueue.qsize() > 0:
-                self.monQueue.get()
-            outputChannels = outdata.shape[1]
-            outdata[:] = np.repeat(mon_wav, outputChannels).reshape(-1, outputChannels) / 32768.0
-            outdata[:] = outdata * self.settings.serverMonitorAudioGain
+            self._write_fifo_to_output(
+                self.monQueue,
+                outdata,
+                frames,
+                self.settings.serverMonitorAudioGain,
+            )
         except Exception as e:
+            outdata.fill(0)
             print("[Voice Changer][ServerDevice][audioMonitor_callback]  ex:", e)
             # import traceback
             # traceback.print_exc()
@@ -387,6 +487,7 @@ class ServerDevice:
                 sd.default.blocksize = block_frame
 
                 # main loop
+                self._clear_audio_buffers()
                 try:
                     # See https://github.com/w-okada/voice-changer/issues/620
                     def judgeServerDeviceMode() -> LocalServerDeviceMode:
@@ -417,11 +518,14 @@ class ServerDevice:
                         raise RuntimeError(f"Unknown ServerDeviceMode: {serverDeviceMode}")
 
                 except Exception as e:
+                    self._clear_audio_buffers()
                     print("[Voice Changer] processing, ex:", e)
                     import traceback
 
                     traceback.print_exc()
                     time.sleep(2)
+                finally:
+                    self._clear_audio_buffers()
 
     ###########################################
     # Info Section
@@ -444,4 +548,6 @@ class ServerDevice:
             setattr(self.settings, key, int(val))
         elif key in EditableServerDeviceSettings["floatData"]:
             setattr(self.settings, key, float(val))
+        if (key == "serverAudioStated" and int(val) != 1) or (key == "enableServerAudio" and int(val) == 0):
+            self._clear_audio_buffers()
         return self.get_info()

@@ -1,6 +1,7 @@
 import { applicationDefault, cert, getApps, initializeApp, type App } from "firebase-admin/app";
 import { getAuth, type Auth } from "firebase-admin/auth";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
+import { getMessaging, type Messaging } from "firebase-admin/messaging";
 
 let adminApp: App | undefined;
 
@@ -50,4 +51,8 @@ export function adminDb(): Firestore {
   return databaseId
     ? getFirestore(getAdminApp(), databaseId)
     : getFirestore(getAdminApp());
+}
+
+export function adminMessaging(): Messaging {
+  return getMessaging(getAdminApp());
 }

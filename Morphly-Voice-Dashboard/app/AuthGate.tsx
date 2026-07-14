@@ -26,7 +26,7 @@ import {
 } from "./firebase-client";
 import type { PlatformSession } from "./platform-types";
 
-const LOCAL_MODE_KEY = "morphly.auth.local-mode.v1";
+const LEGACY_LOCAL_MODE_KEY = "morphly.auth.local-mode.v1";
 
 export type PlatformAuthStatus = "loading" | "signed-out" | "authenticated";
 
@@ -35,12 +35,10 @@ export interface PlatformAuthContextValue {
   session: PlatformSession | null;
   token: string | null;
   error: string;
-  isLocalMode: boolean;
   signIn(email: string, password: string): Promise<void>;
   createAccount(email: string, password: string, displayName: string): Promise<void>;
   signOut(): Promise<void>;
   refreshSession(): Promise<void>;
-  continueLocally(): void;
 }
 
 export type AuthenticatedPlatformAuth = Omit<PlatformAuthContextValue, "session"> & {
@@ -53,21 +51,6 @@ export interface AuthGateProps {
 }
 
 const AuthContext = createContext<PlatformAuthContextValue | null>(null);
-
-function localSession(): PlatformSession {
-  return {
-    uid: "local-device",
-    email: "local@morphly.invalid",
-    displayName: "Local creator",
-    photoUrl: null,
-    role: "user",
-    status: "active",
-    credits: 0,
-    source: "local",
-    createdAt: null,
-    lastSeenAt: null,
-  };
-}
 
 function readableError(error: unknown) {
   return firebaseAuthErrorMessage(error);
@@ -86,7 +69,6 @@ export function AuthGate({ children, loadingFallback }: AuthGateProps) {
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [error, setError] = useState("");
   const syncNonce = useRef(0);
-  const localMode = useRef(false);
 
   const synchronizeCloudUser = useCallback(async (user: FirebaseUser, forceRefresh = false) => {
     const nonce = ++syncNonce.current;
@@ -115,17 +97,9 @@ export function AuthGate({ children, loadingFallback }: AuthGateProps) {
     let unsubscribe: (() => void) | undefined;
 
     try {
-      if (window.localStorage.getItem(LOCAL_MODE_KEY) === "true") {
-        localMode.current = true;
-        const timeout = window.setTimeout(() => {
-          setSession(localSession());
-          setToken(null);
-          setStatus("authenticated");
-        }, 0);
-        return () => window.clearTimeout(timeout);
-      }
+      window.localStorage.removeItem(LEGACY_LOCAL_MODE_KEY);
     } catch {
-      // Local mode still remains available even when storage is blocked.
+      // Authentication still proceeds when browser storage is unavailable.
     }
 
     if (!isFirebaseConfigured() || !isCloudApiConfigured()) {
@@ -135,7 +109,7 @@ export function AuthGate({ children, loadingFallback }: AuthGateProps) {
 
     void observeFirebaseUser(
       (user) => {
-        if (disposed || localMode.current) return;
+        if (disposed) return;
         setFirebaseUser(user);
         if (user) {
           void synchronizeCloudUser(user);
@@ -180,12 +154,6 @@ export function AuthGate({ children, loadingFallback }: AuthGateProps) {
 
   const signOut = useCallback(async () => {
     ++syncNonce.current;
-    localMode.current = false;
-    try {
-      window.localStorage.removeItem(LOCAL_MODE_KEY);
-    } catch {
-      // State is still cleared below.
-    }
     setFirebaseUser(null);
     setSession(null);
     setToken(null);
@@ -199,34 +167,16 @@ export function AuthGate({ children, loadingFallback }: AuthGateProps) {
     await synchronizeCloudUser(firebaseUser, true);
   }, [firebaseUser, synchronizeCloudUser]);
 
-  const continueLocally = useCallback(() => {
-    ++syncNonce.current;
-    localMode.current = true;
-    try {
-      window.localStorage.setItem(LOCAL_MODE_KEY, "true");
-    } catch {
-      // Local processing can continue for this browser session.
-    }
-    if (firebaseUser) void signOutFirebase().catch(() => undefined);
-    setFirebaseUser(null);
-    setToken(null);
-    setSession(localSession());
-    setError("");
-    setStatus("authenticated");
-  }, [firebaseUser]);
-
   const contextValue = useMemo<PlatformAuthContextValue>(() => ({
     status,
     session,
     token,
     error,
-    isLocalMode: session?.source === "local",
     signIn,
     createAccount,
     signOut,
     refreshSession,
-    continueLocally,
-  }), [continueLocally, createAccount, error, refreshSession, session, signIn, signOut, status, token]);
+  }), [createAccount, error, refreshSession, session, signIn, signOut, status, token]);
 
   let content: ReactNode;
   if (status === "loading") {
@@ -303,10 +253,6 @@ function LoginPanel({ auth }: { auth: PlatformAuthContextValue }) {
           {!cloudLoginAvailable && <p style={authStyles.configuration}><strong>Cloud sign-in is not ready.</strong><br />{firebaseIssue || cloudIssue}</p>}
           <button type="submit" style={authStyles.primaryButton} disabled={busy || !cloudLoginAvailable}>{busy ? "Please wait..." : mode === "sign-in" ? "Enter studio" : "Create account"}</button>
         </form>
-
-        <div style={authStyles.divider}><span style={authStyles.dividerLine} /><span>or</span><span style={authStyles.dividerLine} /></div>
-        <button type="button" style={authStyles.localButton} onClick={auth.continueLocally}>Continue in local mode</button>
-        <p style={authStyles.localNote}>Local mode keeps the voice engine available on this computer. Cloud credits, payments, syncing, and all admin tools remain disabled.</p>
       </section>
     </main>
   );
@@ -344,8 +290,4 @@ const authStyles: Record<string, CSSProperties> = {
   error: { background: "#fff0f2", border: "1px solid #ffc8d1", borderRadius: 9, color: "#a80722", fontSize: 11, lineHeight: 1.45, margin: 0, padding: "10px 12px" },
   configuration: { background: "#fff8eb", border: "1px solid #efd9ad", borderRadius: 9, color: "#76592b", fontSize: 10.5, lineHeight: 1.5, margin: 0, padding: "10px 12px" },
   primaryButton: { background: "#e20d2f", border: "1px solid #e20d2f", borderRadius: 10, boxShadow: "0 9px 22px rgba(226,13,47,.18)", color: "#fff", fontSize: 12, fontWeight: 720, minHeight: 44, padding: "0 16px", width: "100%" },
-  divider: { alignItems: "center", color: "#aaaab1", display: "flex", fontSize: 10, gap: 10, margin: "20px 0 15px" },
-  dividerLine: { background: "#e6e6ea", flex: 1, height: 1 },
-  localButton: { background: "#fff", border: "1px solid #d9d9de", borderRadius: 10, color: "#414147", fontSize: 12, fontWeight: 680, minHeight: 43, width: "100%" },
-  localNote: { color: "#9898a0", fontSize: 9.5, lineHeight: 1.5, margin: "10px 3px 0", textAlign: "center" },
 };

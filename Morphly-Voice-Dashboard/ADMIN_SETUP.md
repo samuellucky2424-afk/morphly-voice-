@@ -20,8 +20,12 @@ The desktop dashboard uses Firebase Authentication in the browser and sends the 
 Use `Morphly-Voice-Dashboard` as the Vercel project root. Add all server variables from `.env.example`, including:
 
 - `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY`
-- `FLUTTERWAVE_SECRET_KEY`, `FLUTTERWAVE_SECRET_HASH`, and `FLUTTERWAVE_REDIRECT_URL`
+- `FLUTTERWAVE_PUBLIC_KEY`, `FLUTTERWAVE_SECRET_KEY`, `FLUTTERWAVE_SECRET_HASH`, and `FLUTTERWAVE_REDIRECT_URL`
 - `APP_ALLOWED_ORIGINS` for any hosted dashboard origin
+
+Add the browser-safe Firebase values at build time, including
+`VITE_FIREBASE_VAPID_KEY` when web push is enabled. Generate the VAPID key pair
+in Firebase Console under **Project settings → Cloud Messaging → Web Push certificates**.
 
 Set the Flutterwave webhook URL to:
 
@@ -29,7 +33,7 @@ Set the Flutterwave webhook URL to:
 https://YOUR-VERCEL-DOMAIN/api/webhooks/flutterwave
 ```
 
-Credits are awarded only after the webhook signature is accepted and the transaction is re-verified with Flutterwave. Duplicate webhooks are idempotent.
+Credits are awarded only after the transaction is re-verified server-side with Flutterwave. The signed webhook and the authenticated Inline callback share the same idempotent fulfillment transaction, so duplicate callbacks cannot add credits twice.
 
 ## 3. Grant an administrator role
 
@@ -51,10 +55,10 @@ npm run typecheck:static
 npm run build:static
 ```
 
-Then start the application from the repository root with `start_http.bat`. A verified `admin` role opens the Admin Console; a normal account opens the voice workspace. If cloud settings are absent, **Continue in local mode** keeps RVC and Beatrice available but cannot expose any admin function.
+Then start the application from the repository root with `start_http.bat`. A verified `admin` role opens the Admin Console; a normal account opens the voice workspace. Firebase sign-in or account creation is mandatory; the local-mode bypass has been removed. If the cloud configuration is missing, the application stays on the sign-in screen and reports the missing values.
 
 ## Data and privacy
 
-The admin console stores operational metadata such as engine mode, model name, session duration, latency, errors, and last heartbeat. It does not transmit or store microphone audio.
+The admin console stores operational metadata such as engine mode, model name, session duration, latency, errors, and last heartbeat. It does not transmit or store microphone audio. Session-history queries are always scoped by the Firebase UID verified by the API; the browser does not share or migrate legacy global history between accounts.
 
 Primary Firestore collections are `users`, `presence`, `sessions`, `payments`, `credit_ledger`, `notifications`, `app_config`, `software_logs`, and `audit_logs`.

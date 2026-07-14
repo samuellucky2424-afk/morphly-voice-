@@ -1,0 +1,16 @@
+Morphly Voice - Beatrice V2 redistribution review required
+===========================================================
+
+This installer definition preserves the Beatrice runtime, model licenses, and
+bundled-component notices found under engines\beatrice-v2. Passing the package
+preflight confirms that those files exist; it does not grant redistribution
+rights.
+
+The bundled Beatrice notice states that the program contains a non-public
+inference library and describes restrictions unless separate permission has
+been obtained from Project Beatrice. Do not publish or distribute an installer
+containing this runtime until the applicable license terms and any required
+permission have been reviewed and documented by the distributor.
+
+The final installer must retain LICENSE, LICENSE-NOTICE, this notice, and all
+license files shipped inside the Beatrice model/runtime tree.

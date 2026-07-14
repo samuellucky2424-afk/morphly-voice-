@@ -2,7 +2,7 @@ export type PlatformRole = "user" | "admin";
 
 export type AccountStatus = "active" | "suspended" | "pending" | "disabled";
 
-export type PlatformSessionSource = "cloud" | "local";
+export type PlatformSessionSource = "cloud";
 
 export type VoiceEngineName = "rvc" | "beatrice";
 
@@ -37,6 +37,48 @@ export interface PublicNotification {
   endsAt: string | null;
   actionLabel: string | null;
   actionUrl: string | null;
+  isRead: boolean;
+  readAt: string | null;
+}
+
+export type BillingCurrency = "USD" | "NGN";
+
+export interface BillingPlan {
+  id: string;
+  label: string;
+  credits: number;
+  amountMinor: number;
+  amount: number;
+  currency: BillingCurrency;
+  enabled: boolean;
+  bestValue: boolean;
+  sortOrder: number;
+}
+
+export interface BillingConfig {
+  version: number;
+  currency: BillingCurrency;
+  periodSeconds: 10;
+  creditsPerPeriod: 2;
+  plans: BillingPlan[];
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+export interface UserSessionRecord {
+  id: string;
+  clientSessionId: string;
+  startedAt: string;
+  endedAt: string;
+  durationSeconds: number;
+  engineMode: VoiceEngineName;
+  voiceName: string;
+  modelName: string;
+  sampleRate: number;
+  chunkSize: number;
+  latencyMs: number | null;
+  status: string;
+  creditsCharged: number;
 }
 
 export interface SupportConfig {
@@ -55,6 +97,29 @@ export interface UserBootstrap {
   notifications: PublicNotification[];
   support: SupportConfig;
   serverTime: string;
+}
+
+export interface UsageSessionInput {
+  sessionId: string;
+  engine: VoiceEngineName;
+  voiceName: string;
+  modelName: string;
+  sampleRate: number;
+  chunkSize: number;
+  latencyMs?: number | null;
+}
+
+export interface UsageTickResult {
+  sessionId: string;
+  accepted: boolean;
+  duplicate: boolean;
+  allowed: boolean;
+  status: string;
+  creditsRemaining: number;
+  chargedCredits: number;
+  totalChargedCredits: number;
+  billedPeriods: number;
+  nextHeartbeatSeconds: number;
 }
 
 export interface AnalyticsPoint {
@@ -82,6 +147,7 @@ export interface AdminOverview {
   revenue: AnalyticsPoint[];
   sessions: AnalyticsPoint[];
   engineUsage: Record<VoiceEngineName, number>;
+  reportingCurrency: BillingCurrency;
   generatedAt: string;
 }
 
@@ -233,14 +299,44 @@ export interface ClientEventInput {
 
 export interface PaymentInitializationInput {
   planId: string;
+  expectedBillingVersion: number;
+  expectedAmountMinor: number;
+  expectedCurrency: BillingCurrency;
   returnUrl?: string;
+  checkoutMode?: "hosted" | "inline";
+}
+
+export interface FlutterwaveInlineInitialization {
+  publicKey: string;
+  txRef: string;
+  amount: number;
+  currency: BillingCurrency;
+  customer: { email: string; name: string };
+  meta: Record<string, string | number>;
+  customizations: { title: string; description: string };
 }
 
 export interface PaymentInitializationResult {
-  checkoutUrl: string;
+  checkoutUrl: string | null;
+  checkoutMode: "hosted" | "inline";
+  inline: FlutterwaveInlineInitialization | null;
   reference: string;
   amount: number;
-  currency: string;
+  currency: BillingCurrency;
   credits: number;
   status: "pending";
+}
+
+export interface PaymentVerificationResult {
+  credited: boolean;
+  duplicate: boolean;
+  txRef: string;
+  newBalance: number | null;
+}
+
+export interface PaymentStatusResult {
+  txRef: string;
+  status: string;
+  credited: boolean;
+  newBalance: number | null;
 }

@@ -238,6 +238,14 @@
 .admin-safeguard-grid svg { color: var(--admin-red); }
 .admin-safeguard-grid strong { display: block; font-size: 8.5px; margin-top: 8px; }
 .admin-safeguard-grid p { color: #85858d; font-size: 7px; line-height: 1.5; margin: 4px 0 0; }
+.admin-billing-card { overflow: visible; }
+.admin-package-editor { display: flex; flex-direction: column; gap: 9px; }
+.admin-package-row { align-items: end; background: #f8f8f9; border: 1px solid #e9e9ed; border-radius: 11px; display: grid; gap: 8px; grid-template-columns: minmax(130px, 1.2fr) minmax(85px, .7fr) minmax(105px, .8fr) auto auto; padding: 10px; }
+.admin-package-row label { display: flex; flex-direction: column; gap: 4px; }
+.admin-package-row label > span { color: #777780; font-size: 7px; font-weight: 650; }
+.admin-package-row input[type="text"], .admin-package-row input[type="number"], .admin-package-row input:not([type]) { background: #fff; border: 1px solid #dedee3; border-radius: 8px; font-size: 8px; height: 32px; min-width: 0; padding: 0 8px; width: 100%; }
+.admin-package-row .admin-package-check { align-items: center; flex-direction: row; gap: 5px; min-height: 32px; white-space: nowrap; }
+.admin-package-check input { accent-color: var(--admin-red); }
 
 .admin-error-state { align-items: center; background: #fff8ef; border: 1px solid #efd7b5; border-radius: 13px; color: #7b5221; display: flex; gap: 12px; margin-top: 15px; padding: 14px; }
 .admin-error-state > span { align-items: center; background: #fff; border-radius: 9px; color: #cf8120; display: flex; height: 38px; justify-content: center; width: 38px; }
@@ -296,6 +304,7 @@
   .admin-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-overview-grid, .admin-split-layout { grid-template-columns: 1fr; }
   .admin-form-card, .admin-notification-list-card, .admin-support-preview { min-height: 0; }
+  .admin-package-row { grid-template-columns: 1fr 1fr 1fr; }
 }
 
 @media (max-width: 900px) {
@@ -325,6 +334,7 @@
   .admin-filter-row { align-items: stretch; flex-direction: column; width: 100%; }
   .admin-search, .admin-filter-row > select { width: 100%; }
   .admin-safeguard-grid { grid-template-columns: 1fr; }
+  .admin-package-row { grid-template-columns: 1fr; }
   .admin-error-state { align-items: flex-start; flex-wrap: wrap; }
   .admin-error-state > div { min-width: calc(100% - 55px); }
   .admin-error-state button { margin-left: 50px; }
