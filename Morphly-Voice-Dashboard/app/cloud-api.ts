@@ -6,6 +6,8 @@ import type {
   AdminOverview,
   AdminPurchase,
   AdminUser,
+  BillingConfig,
+  BillingCurrency,
   ClientEventInput,
   ClientHeartbeatInput,
   CreateNotificationInput,
@@ -14,11 +16,16 @@ import type {
   PaginatedResult,
   PaymentInitializationInput,
   PaymentInitializationResult,
+  PaymentStatusResult,
+  PaymentVerificationResult,
   PlatformSession,
   PublicNotification,
   SupportConfig,
   SuspensionInput,
   UpdateSupportConfigInput,
+  UsageSessionInput,
+  UsageTickResult,
+  UserSessionRecord,
   UserBootstrap,
 } from "./platform-types";
 
@@ -212,6 +219,63 @@ function notificationFromPayload(payload: unknown): PublicNotification {
     endsAt: nullableText(value.endsAt || value.expiresAt),
     actionLabel: nullableText(value.actionLabel),
     actionUrl: nullableText(value.actionUrl),
+    isRead: value.isRead === true,
+    readAt: nullableText(value.readAt),
+  };
+}
+
+function billingCurrency(value: unknown): BillingCurrency {
+  return String(value || "").toUpperCase() === "NGN" ? "NGN" : "USD";
+}
+
+function billingFromPayload(payload: unknown): BillingConfig {
+  const root = objectValue(unwrapData<unknown>(payload));
+  const value = objectValue(root.billing || root);
+  const currency = billingCurrency(value.currency);
+  const plans = Array.isArray(value.plans) ? value.plans.map((raw, index) => {
+    const plan = objectValue(raw);
+    return {
+      id: text(plan.id),
+      label: text(plan.label, text(plan.id, `Package ${index + 1}`)),
+      credits: Math.max(0, Math.trunc(numericValue(plan.credits))),
+      amountMinor: Math.max(0, Math.trunc(numericValue(plan.amountMinor))),
+      amount: Math.max(0, numericValue(plan.amount)),
+      currency: billingCurrency(plan.currency || currency),
+      enabled: plan.enabled !== false,
+      bestValue: plan.bestValue === true,
+      sortOrder: Math.max(0, Math.trunc(numericValue(plan.sortOrder, index))),
+    };
+  }) : [];
+  return {
+    version: Math.max(1, Math.trunc(numericValue(value.version, 1))),
+    currency,
+    periodSeconds: 10,
+    creditsPerPeriod: 2,
+    plans,
+    updatedAt: nullableText(value.updatedAt),
+    updatedBy: nullableText(value.updatedBy),
+  };
+}
+
+function userSessionFromPayload(payload: unknown): UserSessionRecord {
+  const value = objectValue(payload);
+  const billing = objectValue(value.billing);
+  const engineMode = text(value.engineMode || value.engine).toLowerCase() === "beatrice" ? "beatrice" : "rvc";
+  const startedAt = text(value.startedAt || value.createdAt, new Date().toISOString());
+  return {
+    id: text(value.id || value.clientSessionId),
+    clientSessionId: text(value.clientSessionId || value.sessionId || value.id),
+    startedAt,
+    endedAt: text(value.endedAt || value.updatedAt, startedAt),
+    durationSeconds: Math.max(0, Math.round(numericValue(value.durationSeconds))),
+    engineMode,
+    voiceName: text(value.voiceName, "Voice session"),
+    modelName: text(value.modelName, "Local model"),
+    sampleRate: Math.max(0, Math.round(numericValue(value.sampleRate))),
+    chunkSize: Math.max(0, Math.round(numericValue(value.chunkSize))),
+    latencyMs: value.latencyMs === null || value.latencyMs === undefined ? null : numericValue(value.latencyMs),
+    status: text(value.status, "completed"),
+    creditsCharged: Math.max(0, Math.round(numericValue(billing.totalChargedCredits || value.creditsCharged))),
   };
 }
 
@@ -271,6 +335,7 @@ function overviewFromPayload(payload: unknown): AdminOverview {
       rvc: numericValue(engineUsage.rvc),
       beatrice: numericValue(engineUsage.beatrice),
     },
+    reportingCurrency: billingCurrency(root.reportingCurrency),
     generatedAt: text(root.generatedAt, new Date().toISOString()),
   };
 }
@@ -324,6 +389,53 @@ export async function getUserBootstrap(token: string) {
     support: supportFromPayload(root.support || {}),
     serverTime: text(root.serverTime, new Date().toISOString()),
   } satisfies UserBootstrap;
+}
+
+export async function getUserSessions(token: string) {
+  const payload = await cloudRequest<unknown>("/user/sessions", token);
+  const root = objectValue(unwrapData<unknown>(payload));
+  const sessions = Array.isArray(root.sessions) ? root.sessions : Array.isArray(root.items) ? root.items : [];
+  return sessions.map(userSessionFromPayload);
+}
+
+export async function clearUserSessions(token: string) {
+  return cloudRequest<{ deleted: number; moreRemaining?: boolean }>("/user/sessions", token, { method: "DELETE" });
+}
+
+export async function getNotifications(token: string) {
+  const payload = await cloudRequest<unknown>("/notifications", token);
+  const root = objectValue(unwrapData<unknown>(payload));
+  const raw = Array.isArray(root.notifications) ? root.notifications : [];
+  return {
+    notifications: raw.map(notificationFromPayload),
+    unreadCount: Math.max(0, Math.trunc(numericValue(root.unreadCount))),
+  };
+}
+
+export async function markNotificationsRead(token: string, notificationIds?: string[]) {
+  return cloudRequest<{ markedRead: number }>("/notifications/read", token, jsonBody("POST", {
+    ...(notificationIds?.length ? { notificationIds } : { all: true }),
+  }));
+}
+
+export async function registerPushToken(token: string, input: { token: string; deviceId: string; userAgent?: string }) {
+  return cloudRequest<{ registered: boolean }>("/notifications/push/register", token, jsonBody("POST", input));
+}
+
+export async function unregisterPushToken(token: string, deviceId: string) {
+  return cloudRequest<{ unregistered: boolean }>("/notifications/push/unregister", token, jsonBody("POST", { deviceId }));
+}
+
+export async function getBillingConfig(token: string) {
+  return billingFromPayload(await cloudRequest<unknown>("/billing/config", token));
+}
+
+export async function getAdminBillingConfig(token: string) {
+  return billingFromPayload(await cloudRequest<unknown>("/admin/billing-config", token));
+}
+
+export async function updateAdminBillingConfig(token: string, billing: BillingConfig) {
+  return billingFromPayload(await cloudRequest<unknown>("/admin/billing-config", token, jsonBody("PUT", { billing })));
 }
 
 export async function getAdminOverview(token: string) {
@@ -404,6 +516,45 @@ export async function sendHeartbeat(token: string, input: ClientHeartbeatInput) 
   }));
 }
 
+export async function prepareUsageSession(token: string, input: UsageSessionInput) {
+  return cloudRequest<UsageTickResult & { billing: { periodSeconds: number; creditsPerPeriod: number } }>(
+    "/usage/prepare",
+    token,
+    jsonBody("POST", { ...input, engineMode: input.engine }),
+    8_000,
+  );
+}
+
+export async function activateUsageSession(token: string, sessionId: string) {
+  return cloudRequest<UsageTickResult>("/usage/activate", token, jsonBody("POST", { sessionId }), 8_000);
+}
+
+export async function heartbeatUsageSession(token: string, input: { sessionId: string; sequence: number; latencyMs?: number | null }) {
+  return cloudRequest<UsageTickResult>("/usage/heartbeat", token, jsonBody("POST", input), 7_000);
+}
+
+export async function stopUsageSession(token: string, input: { sessionId: string; sequence: number; latencyMs?: number | null }) {
+  return cloudRequest<UsageTickResult>("/usage/stop", token, jsonBody("POST", input), 7_000);
+}
+
+export function stopUsageSessionOnPageHide(
+  token: string,
+  input: { sessionId: string; sequence: number; latencyMs?: number | null },
+) {
+  return fetch(endpoint("/usage/stop"), {
+    method: "POST",
+    keepalive: true,
+    cache: "no-store",
+    credentials: "omit",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(input),
+  });
+}
+
 export async function sendClientEvent(token: string, input: ClientEventInput) {
   await cloudRequest<unknown>("/telemetry/events", token, jsonBody("POST", {
     ...input,
@@ -418,12 +569,51 @@ export async function initializePayment(token: string, input: PaymentInitializat
   const payload = await cloudRequest<unknown>("/payments/initialize", token, jsonBody("POST", input));
   const root = objectValue(unwrapData<unknown>(payload));
   const payment = objectValue(root.payment);
+  const inlineValue = objectValue(root.inline);
+  const customer = objectValue(inlineValue.customer);
+  const meta = objectValue(inlineValue.meta);
+  const customizations = objectValue(inlineValue.customizations);
+  const inline = text(inlineValue.publicKey) && text(inlineValue.txRef)
+    ? {
+        publicKey: text(inlineValue.publicKey),
+        txRef: text(inlineValue.txRef),
+        amount: numericValue(inlineValue.amount),
+        currency: billingCurrency(inlineValue.currency),
+        customer: { email: text(customer.email), name: text(customer.name) },
+        meta: Object.fromEntries(Object.entries(meta).filter(([, value]) => typeof value === "string" || typeof value === "number")) as Record<string, string | number>,
+        customizations: { title: text(customizations.title), description: text(customizations.description) },
+      }
+    : null;
   return {
-    checkoutUrl: text(root.checkoutUrl || root.link),
+    checkoutUrl: nullableText(root.checkoutUrl || root.link),
+    checkoutMode: root.checkoutMode === "inline" ? "inline" : "hosted",
+    inline,
     reference: text(root.reference || payment.txRef),
     amount: numericValue(root.amount ?? payment.amount),
-    currency: text(root.currency || payment.currency, "USD"),
+    currency: billingCurrency(root.currency || payment.currency),
     credits: numericValue(root.credits ?? payment.credits),
     status: "pending",
   } satisfies PaymentInitializationResult;
+}
+
+export async function verifyPayment(token: string, transactionId: number, txRef: string) {
+  const payload = await cloudRequest<unknown>("/payments/verify", token, jsonBody("POST", { transactionId, txRef }));
+  const root = objectValue(unwrapData<unknown>(payload));
+  return {
+    credited: root.credited === true,
+    duplicate: root.duplicate === true,
+    txRef: text(root.txRef, txRef),
+    newBalance: root.newBalance === null || root.newBalance === undefined ? null : numericValue(root.newBalance),
+  } satisfies PaymentVerificationResult;
+}
+
+export async function getPaymentStatus(token: string, txRef: string) {
+  const payload = await cloudRequest<unknown>(`/payments/status?txRef=${encodeURIComponent(txRef)}`, token);
+  const root = objectValue(unwrapData<unknown>(payload));
+  return {
+    txRef: text(root.txRef || root.reference, txRef),
+    status: text(root.status, "pending"),
+    credited: root.credited === true,
+    newBalance: root.newBalance === null || root.newBalance === undefined ? null : numericValue(root.newBalance),
+  } satisfies PaymentStatusResult;
 }

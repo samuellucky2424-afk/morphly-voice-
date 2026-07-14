@@ -44,7 +44,7 @@ export function applyCors(request: ApiRequest, response: ApiResponse): boolean {
 
   response.setHeader("Access-Control-Allow-Origin", origin);
   response.setHeader("Vary", "Origin");
-  response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   response.setHeader(
     "Access-Control-Allow-Headers",
     "Authorization, Content-Type, Idempotency-Key, X-Requested-With",

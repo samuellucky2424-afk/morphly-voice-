@@ -37,6 +37,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   adjustUserCredits,
   createNotification,
+  getAdminBillingConfig,
   getAdminLiveSessions,
   getAdminLogs,
   getAdminNotifications,
@@ -45,6 +46,7 @@ import {
   getAdminUsers,
   getSupportConfig,
   setUserSuspension,
+  updateAdminBillingConfig,
   updateSupportConfig,
 } from "./cloud-api";
 import type {
@@ -54,6 +56,8 @@ import type {
   AdminOverview,
   AdminPurchase,
   AdminUser,
+  BillingConfig,
+  BillingCurrency,
   CreateNotificationInput,
   CreditAdjustmentInput,
   NotificationAudience,
@@ -296,6 +300,8 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
   const [logs, setLogs] = useState<AdminLogEntry[]>([]);
   const [notifications, setNotifications] = useState<AdminNotification[]>([]);
   const [supportConfig, setSupportConfig] = useState<SupportConfig | null>(null);
+  const [billingConfig, setBillingConfig] = useState<BillingConfig | null>(null);
+  const [billingDraft, setBillingDraft] = useState<BillingConfig | null>(null);
   const [userSearch, setUserSearch] = useState("");
   const [userStatusFilter, setUserStatusFilter] = useState("all");
   const [purchaseSearch, setPurchaseSearch] = useState("");
@@ -325,6 +331,8 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
   });
   const [supportSubmitting, setSupportSubmitting] = useState(false);
   const [supportError, setSupportError] = useState("");
+  const [billingSubmitting, setBillingSubmitting] = useState(false);
+  const [billingError, setBillingError] = useState("");
   const [toast, setToast] = useState("");
   const [signingOut, setSigningOut] = useState(false);
 
@@ -375,12 +383,15 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
       } else if (screen === "logs") {
         setLogs((await getAdminLogs(token)).items);
       } else if (screen === "settings") {
-        const [overviewResult, supportResult] = await Promise.all([
+        const [overviewResult, supportResult, billingResult] = await Promise.all([
           getAdminOverview(token),
           getSupportConfig(token),
+          getAdminBillingConfig(token),
         ]);
         setOverview(overviewResult);
         setSupportConfig(supportResult);
+        setBillingConfig(billingResult);
+        setBillingDraft(billingResult);
       }
       setScreenState(screen, { loading: false, error: "" });
     } catch (error) {
@@ -523,6 +534,31 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
       setSupportError(readableError(error));
     } finally {
       setSupportSubmitting(false);
+    }
+  };
+
+  const submitBillingConfig = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!billingDraft) return;
+    setBillingError("");
+    if (!billingDraft.plans.some((plan) => plan.enabled)) {
+      setBillingError("At least one credit package must be enabled.");
+      return;
+    }
+    if (billingDraft.plans.some((plan) => !plan.label.trim() || plan.credits <= 0 || plan.amountMinor <= 0)) {
+      setBillingError("Every package needs a name, positive credit amount, and positive price.");
+      return;
+    }
+    setBillingSubmitting(true);
+    try {
+      const updated = await updateAdminBillingConfig(token, billingDraft);
+      setBillingConfig(updated);
+      setBillingDraft(updated);
+      setToast(`Credit packages updated in ${updated.currency}.`);
+    } catch (error) {
+      setBillingError(readableError(error));
+    } finally {
+      setBillingSubmitting(false);
     }
   };
 
@@ -688,7 +724,19 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
               {activeScreen === "notifications" && <NotificationsScreen notifications={notifications} draft={notificationDraft} setDraft={setNotificationDraft} submitting={notificationSubmitting} error={notificationError} onSubmit={submitNotification} />}
               {activeScreen === "support" && <SupportScreen config={supportConfig} draft={supportDraft} setDraft={setSupportDraft} submitting={supportSubmitting} error={supportError} onSubmit={submitSupportConfig} />}
               {activeScreen === "logs" && <LogsScreen logs={filteredLogs} total={logs.length} search={logSearch} levelFilter={logLevelFilter} onSearch={setLogSearch} onLevelFilter={setLogLevelFilter} />}
-              {activeScreen === "settings" && <SettingsScreen overview={overview} supportConfig={supportConfig} session={session} />}
+              {activeScreen === "settings" && (
+                <SettingsScreen
+                  overview={overview}
+                  supportConfig={supportConfig}
+                  session={session}
+                  billingConfig={billingConfig}
+                  billingDraft={billingDraft}
+                  setBillingDraft={setBillingDraft}
+                  billingSubmitting={billingSubmitting}
+                  billingError={billingError}
+                  onSubmitBilling={submitBillingConfig}
+                />
+              )}
             </>
           )}
         </div>
@@ -758,7 +806,7 @@ function OverviewScreen({ overview, liveSessions, onNavigate }: { overview: Admi
         <MetricCard label="Total users" value={formatNumber(totalUsers)} detail={`${formatNumber(activeUsers)} active`} icon={<Users size={20} />} tone="red" />
         <MetricCard label="Live sessions" value={formatNumber(liveSessions.length)} detail="Current heartbeats" icon={<Radio size={20} />} tone="green" />
         <MetricCard label="Credits issued" value={formatNumber(credits)} detail={`${formatNumber(suspendedUsers)} suspended users`} icon={<Coins size={20} />} tone="amber" />
-        <MetricCard label="Revenue value" value={formatNumber(revenue)} detail={`${formatNumber(overview.metrics.purchasesToday)} purchases today`} icon={<CircleDollarSign size={20} />} tone="blue" />
+        <MetricCard label="Revenue value" value={formatCurrency(revenue, overview.reportingCurrency)} detail={`${formatNumber(overview.metrics.purchasesToday)} purchases today`} icon={<CircleDollarSign size={20} />} tone="blue" />
       </div>
 
       <div className="admin-overview-grid">
@@ -806,14 +854,15 @@ function LiveScreen({ sessions, total, search, engineFilter, onSearch, onEngineF
 
 function AnalyticsScreen({ overview, purchases, liveSessions }: { overview: AdminOverview | null; purchases: AdminPurchase[]; liveSessions: AdminLiveSession[] }) {
   if (!overview) return <AdminEmptyState icon={<BarChart3 size={25} />} title="Analytics unavailable" description="The admin overview endpoint did not return analytics data." />;
-  const revenue = purchases.reduce((sum, purchase) => {
+  const currency = overview.reportingCurrency;
+  const currencyPurchases = purchases.filter((purchase) => readString(purchase, ["currency"], currency).toUpperCase() === currency);
+  const revenue = currencyPurchases.reduce((sum, purchase) => {
     const status = readString(purchase, ["status", "paymentStatus"]).toLowerCase();
     return ["success", "successful", "completed", "paid"].includes(status) ? sum + readNumber(purchase, ["amount", "paidAmount"]) : sum;
   }, 0);
-  const currency = readString(purchases[0], ["currency"], readString(overview, ["currency"], "NGN"));
   const successfulPayments = purchases.filter((purchase) => ["success", "successful", "completed", "paid"].includes(readString(purchase, ["status", "paymentStatus"]).toLowerCase())).length;
   const paymentRate = purchases.length ? (successfulPayments / purchases.length) * 100 : 0;
-  const dailyRevenue = purchaseSeries(purchases);
+  const dailyRevenue = purchaseSeries(currencyPurchases);
   const rvc = overview.engineUsage.rvc;
   const beatrice = overview.engineUsage.beatrice;
   const maxEngine = Math.max(rvc, beatrice, 1);
@@ -836,10 +885,69 @@ function LogsScreen({ logs, total, search, levelFilter, onSearch, onLevelFilter 
   return <section className="admin-card admin-data-card"><div className="admin-data-toolbar"><div><span>Operational events</span><h3>Software and service logs</h3><p>{logs.length === total ? `${total} events` : `${logs.length} of ${total} events`}</p></div><div className="admin-filter-row"><SearchInput value={search} onChange={onSearch} placeholder="Message, service or ID" /><select value={levelFilter} aria-label="Filter logs by severity" onChange={(event) => onLevelFilter(event.target.value)}><option value="all">All levels</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option><option value="critical">Critical</option></select></div></div>{!logs.length ? <AdminInlineEmpty message="No software logs match this search or filter." /> : <div className="admin-table-wrap"><table className="admin-table admin-log-table"><thead><tr><th>Level</th><th>Source</th><th>Event</th><th>Reference</th><th>Timestamp</th></tr></thead><tbody>{logs.map((entry, index) => { const level = readString(entry, ["level", "severity"], "info"); return <tr key={readString(entry, ["id", "logId"], String(index))}><td><StatusBadge status={level} /></td><td><strong>{readString(entry, ["source", "category", "service"], "application")}</strong></td><td><p className="admin-log-message">{readString(entry, ["message", "event"], "No event message")}</p></td><td><span className="admin-mono">{readString(entry, ["requestId", "sessionId", "userId"], "—")}</span></td><td>{formatDate(firstValue(asRecord(entry), ["createdAt", "timestamp", "occurredAt"]))}</td></tr>; })}</tbody></table></div>}</section>;
 }
 
-function SettingsScreen({ overview, supportConfig, session }: { overview: AdminOverview | null; supportConfig: SupportConfig | null; session: PlatformSession }) {
+function SettingsScreen({
+  overview,
+  supportConfig,
+  session,
+  billingConfig,
+  billingDraft,
+  setBillingDraft,
+  billingSubmitting,
+  billingError,
+  onSubmitBilling,
+}: {
+  overview: AdminOverview | null;
+  supportConfig: SupportConfig | null;
+  session: PlatformSession;
+  billingConfig: BillingConfig | null;
+  billingDraft: BillingConfig | null;
+  setBillingDraft: (config: BillingConfig | null) => void;
+  billingSubmitting: boolean;
+  billingError: string;
+  onSubmitBilling: (event: FormEvent) => void;
+}) {
   const identity = sessionIdentity(session);
   const role = readString(session, ["role"], readString(nestedRecord(session, ["user", "profile"]), ["role"], "admin"));
-  return <div className="admin-settings-grid"><section className="admin-card"><div className="admin-card-heading"><div><span>Access control</span><h3>Administrator session</h3></div><ShieldCheck size={19} /></div><div className="admin-settings-list"><SettingsRow label="Signed in as" value={identity.email} status="verified" /><SettingsRow label="Role" value={role} status="protected" /><SettingsRow label="Authorization" value="Firebase ID token" status="server verified" /></div><p className="admin-privacy-note"><ShieldCheck size={16} /> Admin authorization must be checked again by every Vercel serverless endpoint.</p></section><section className="admin-card"><div className="admin-card-heading"><div><span>Connected services</span><h3>Integration status</h3></div><Activity size={19} /></div><div className="admin-settings-list"><SettingsRow label="Firebase Auth & Firestore" value={readString(overview, ["firebaseStatus", "databaseStatus"], overview ? "configured" : "unavailable")} status={overview ? "connected" : "check API"} /><SettingsRow label="Flutterwave" value={readString(overview, ["flutterwaveStatus", "paymentStatus"], overview ? "configured" : "unavailable")} status={overview ? "connected" : "check API"} /><SettingsRow label="Vercel serverless API" value={overview ? "Responding" : "No response"} status={overview ? "connected" : "check API"} /><SettingsRow label="Customer care" value={supportConfig ? "Published" : "Not configured"} status={supportConfig ? "active" : "attention"} /></div></section><section className="admin-card admin-settings-wide"><div className="admin-card-heading"><div><span>Security posture</span><h3>Operational safeguards</h3></div></div><div className="admin-safeguard-grid"><div><ShieldCheck size={18} /><strong>Server-side role checks</strong><p>Privileged requests require a valid Firebase token and administrator role.</p></div><div><FileText size={18} /><strong>Audit every mutation</strong><p>Credit, suspension, support, and notification changes should retain actor and reason.</p></div><div><Database size={18} /><strong>Secrets stay server-side</strong><p>Firebase Admin and Flutterwave secret keys must never enter this static client.</p></div></div></section></div>;
+  const updatePlan = (index: number, patch: Partial<BillingConfig["plans"][number]>) => {
+    if (!billingDraft) return;
+    setBillingDraft({
+      ...billingDraft,
+      plans: billingDraft.plans.map((plan, planIndex) => planIndex === index ? { ...plan, ...patch } : plan),
+    });
+  };
+
+  return (
+    <div className="admin-settings-grid">
+      <section className="admin-card admin-settings-wide admin-billing-card">
+        <div className="admin-card-heading"><div><span>Flutterwave catalog</span><h3>Credit packages & currency</h3></div><WalletCards size={19} /></div>
+        {billingDraft ? (
+          <form className="admin-form-grid" onSubmit={onSubmitBilling}>
+            <label className="admin-field"><span>Checkout currency</span><select value={billingDraft.currency} onChange={(event) => setBillingDraft({ ...billingDraft, currency: event.target.value as BillingCurrency, plans: billingDraft.plans.map((plan) => ({ ...plan, currency: event.target.value as BillingCurrency })) })}><option value="NGN">NGN · Nigerian naira</option><option value="USD">USD · US dollar</option></select></label>
+            <label className="admin-field"><span>Usage charge</span><input value="2 credits per 10 seconds" disabled /></label>
+            <div className="admin-field admin-field-wide admin-package-editor">
+              <span>Packages shown to users</span>
+              {billingDraft.plans.map((plan, index) => (
+                <div className="admin-package-row" key={plan.id}>
+                  <label><span>Name</span><input value={plan.label} maxLength={100} onChange={(event) => updatePlan(index, { label: event.target.value })} /></label>
+                  <label><span>Credits</span><input type="number" min="1" step="1" value={plan.credits} onChange={(event) => updatePlan(index, { credits: Math.max(0, Math.trunc(Number(event.target.value))) })} /></label>
+                  <label><span>Price ({billingDraft.currency})</span><input type="number" min="0.01" step="0.01" value={plan.amountMinor / 100} onChange={(event) => updatePlan(index, { amountMinor: Math.max(0, Math.round(Number(event.target.value) * 100)), amount: Math.max(0, Number(event.target.value)) })} /></label>
+                  <label className="admin-package-check"><input type="checkbox" checked={plan.enabled} onChange={(event) => updatePlan(index, { enabled: event.target.checked })} /><span>Enabled</span></label>
+                  <label className="admin-package-check"><input type="checkbox" checked={plan.bestValue} onChange={(event) => updatePlan(index, { bestValue: event.target.checked })} /><span>Best value</span></label>
+                </div>
+              ))}
+            </div>
+            {billingError && <div className="admin-field-wide"><AdminFormError message={billingError} /></div>}
+            <button className="admin-button-primary admin-field-wide" type="submit" disabled={billingSubmitting}><CheckCircle2 size={16} /> {billingSubmitting ? "Saving packages..." : "Publish package prices"}</button>
+            <small className="admin-field-wide">Version {billingConfig?.version || billingDraft.version}. New prices apply only to new payments; existing payment records retain their original package snapshot.</small>
+          </form>
+        ) : <AdminInlineEmpty message="Billing configuration has not loaded." />}
+      </section>
+
+      <section className="admin-card"><div className="admin-card-heading"><div><span>Access control</span><h3>Administrator session</h3></div><ShieldCheck size={19} /></div><div className="admin-settings-list"><SettingsRow label="Signed in as" value={identity.email} status="verified" /><SettingsRow label="Role" value={role} status="protected" /><SettingsRow label="Authorization" value="Firebase ID token" status="server verified" /></div><p className="admin-privacy-note"><ShieldCheck size={16} /> Admin authorization is checked again by every Vercel serverless endpoint.</p></section>
+      <section className="admin-card"><div className="admin-card-heading"><div><span>Connected services</span><h3>Integration status</h3></div><Activity size={19} /></div><div className="admin-settings-list"><SettingsRow label="Firebase Auth & Firestore" value={overview ? "Configured" : "Unavailable"} status={overview ? "connected" : "check API"} /><SettingsRow label="Flutterwave" value="Server keys required" status="check Vercel" /><SettingsRow label="Vercel serverless API" value={overview ? "Responding" : "No response"} status={overview ? "connected" : "check API"} /><SettingsRow label="Customer care" value={supportConfig ? "Published" : "Not configured"} status={supportConfig ? "active" : "attention"} /></div></section>
+      <section className="admin-card admin-settings-wide"><div className="admin-card-heading"><div><span>Security posture</span><h3>Operational safeguards</h3></div></div><div className="admin-safeguard-grid"><div><ShieldCheck size={18} /><strong>Server-side role checks</strong><p>Privileged requests require a valid Firebase token and administrator role.</p></div><div><FileText size={18} /><strong>Audit every mutation</strong><p>Credit, suspension, support, billing, and notification changes retain actor and reason.</p></div><div><Database size={18} /><strong>Secrets stay server-side</strong><p>Firebase Admin and Flutterwave secret keys never enter this static client.</p></div></div></section>
+    </div>
+  );
 }
 
 function MetricCard({ label, value, detail, icon, tone }: { label: string; value: string; detail: string; icon: React.ReactNode; tone: "red" | "green" | "blue" | "amber" }) {

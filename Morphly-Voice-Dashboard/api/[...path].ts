@@ -21,13 +21,33 @@ import {
   type ApiRequest,
   type ApiResponse,
 } from "./_lib/http.js";
-import { flutterwaveWebhook, initializePayment } from "./_lib/payment-handlers.js";
+import {
+  flutterwaveWebhook,
+  getAdminBillingConfig,
+  getBillingConfig,
+  initializePayment,
+  paymentStatus,
+  updateAdminBillingConfig,
+  verifyPaymentTransaction,
+} from "./_lib/payment-handlers.js";
 import {
   sessionBootstrap,
   telemetryEvent,
   telemetryHeartbeat,
   userSupport,
 } from "./_lib/user-handlers.js";
+import {
+  activateUsageSession,
+  clearUserSessions,
+  heartbeatUsageSession,
+  markNotificationsRead,
+  prepareUsageSession,
+  registerPushToken,
+  stopUsageSession,
+  unregisterPushToken,
+  userNotifications,
+  userSessions,
+} from "./_lib/user-feature-handlers.js";
 
 export const config = {
   api: {
@@ -39,6 +59,10 @@ type RouteHandler = (request: ApiRequest) => Promise<Record<string, unknown>>;
 
 const GET_ROUTES: Record<string, RouteHandler> = {
   "user/bootstrap": sessionBootstrap,
+  "user/sessions": userSessions,
+  "notifications": userNotifications,
+  "billing/config": getBillingConfig,
+  "payments/status": paymentStatus,
   support: userSupport,
   "admin/overview": adminOverview,
   "admin/users": adminUsers,
@@ -48,6 +72,7 @@ const GET_ROUTES: Record<string, RouteHandler> = {
   "admin/logs": adminLogs,
   "admin/notifications": adminNotifications,
   "admin/support": adminSupport,
+  "admin/billing-config": getAdminBillingConfig,
 };
 
 const POST_ROUTES: Record<string, RouteHandler> = {
@@ -55,18 +80,31 @@ const POST_ROUTES: Record<string, RouteHandler> = {
   "telemetry/heartbeat": telemetryHeartbeat,
   "telemetry/event": telemetryEvent,
   "telemetry/events": telemetryEvent,
+  "usage/prepare": prepareUsageSession,
+  "usage/activate": activateUsageSession,
+  "usage/heartbeat": heartbeatUsageSession,
+  "usage/stop": stopUsageSession,
+  "notifications/read": markNotificationsRead,
+  "notifications/push/register": registerPushToken,
+  "notifications/push/unregister": unregisterPushToken,
   "admin/credits": adjustCredits,
   "admin/notifications": createNotification,
   "payments/initialize": initializePayment,
+  "payments/verify": verifyPaymentTransaction,
   "webhooks/flutterwave": flutterwaveWebhook,
 };
 
 const PUT_ROUTES: Record<string, RouteHandler> = {
   "admin/support": updateSupport,
+  "admin/billing-config": updateAdminBillingConfig,
 };
 
 const PATCH_ROUTES: Record<string, RouteHandler> = {
   "admin/users": updateUserSuspension,
+};
+
+const DELETE_ROUTES: Record<string, RouteHandler> = {
+  "user/sessions": clearUserSessions,
 };
 
 export default async function handler(request: ApiRequest, response: ApiResponse): Promise<void> {
@@ -118,6 +156,8 @@ export default async function handler(request: ApiRequest, response: ApiResponse
           ? PUT_ROUTES
           : request.method === "PATCH"
             ? PATCH_ROUTES
+            : request.method === "DELETE"
+              ? DELETE_ROUTES
             : undefined;
     const route = routes?.[path];
     if (route) {
@@ -158,6 +198,7 @@ function allowedMethods(path: string): string[] {
   if (POST_ROUTES[path]) methods.push("POST");
   if (PUT_ROUTES[path]) methods.push("PUT");
   if (PATCH_ROUTES[path]) methods.push("PATCH");
+  if (DELETE_ROUTES[path]) methods.push("DELETE");
   if (path === "health") methods.push("GET");
   return methods;
 }

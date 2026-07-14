@@ -335,6 +335,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .history-rate { background: #f1f1f3; border-radius: 20px; color: #777780; font-size: 7px; padding: 4px 6px; }
 .clear-history-button { align-items: center; background: #fff; border: 1px solid #e6e6ea; border-radius: 9px; color: #777780; display: flex; font-size: 8.5px; gap: 6px; height: 34px; justify-content: center; margin-top: 12px; width: 100%; }
 .clear-history-button:hover { background: var(--red-soft); border-color: #f2c2ca; color: var(--red); }
+.clear-history-button:disabled { cursor: wait; opacity: .62; }
 .account-profile-preview { align-items: center; background: #f7f7f8; border: 1px solid #ebebee; border-radius: 14px; display: flex; gap: 11px; margin: 18px 0; padding: 13px; }
 .account-profile-preview > span { align-items: center; background: #19191d; border-radius: 11px; color: #fff; display: flex; font-size: 11px; font-weight: 720; height: 42px; justify-content: center; width: 42px; }
 .account-profile-preview div { display: flex; flex-direction: column; }
@@ -352,6 +353,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .account-detail-row strong { font-size: 9.5px; text-transform: capitalize; }
 .notification-panel-list { display: flex; flex-direction: column; gap: 9px; max-height: 440px; overflow-y: auto; }
 .notification-panel-item { align-items: flex-start; background: #fafafa; border: 1px solid #e8e8ec; border-radius: 13px; display: grid; gap: 10px; grid-template-columns: 35px 1fr; padding: 11px; }
+.notification-panel-item.unread { background: #fff7f8; border-color: #f0bbc4; box-shadow: inset 3px 0 0 var(--red); }
+.notification-enable-button { margin: -2px 0 12px; width: 100%; }
 .notification-panel-item > span { align-items: center; background: #eef3ff; border-radius: 9px; color: #526ed4; display: flex; height: 35px; justify-content: center; width: 35px; }
 .notification-panel-item.notification-success > span { background: #e9f8f1; color: var(--green); }
 .notification-panel-item.notification-warning > span { background: #fff5e8; color: #b9761a; }
@@ -375,6 +378,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .plan-grid { display: grid; gap: 9px; grid-template-columns: repeat(3, 1fr); }
 .plan-card { background: #fff; border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; min-height: 120px; padding: 14px 10px; position: relative; text-align: left; }
 .plan-card.best { background: #fff6f7; border-color: var(--red); }
+.plan-card.selected { border-color: var(--red); box-shadow: 0 0 0 2px rgba(235, 20, 53, .12); transform: translateY(-1px); }
 .plan-card > small { background: var(--red); border-radius: 0 10px 0 8px; color: #fff; font-size: 6.5px; padding: 4px 6px; position: absolute; right: 0; top: 0; }
 .plan-card strong { font-size: 18px; margin-top: 13px; }
 .plan-card span { color: #8a8a92; font-size: 8px; }

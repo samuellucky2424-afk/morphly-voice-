@@ -1,0 +1,15 @@
+{
+  "gpu": -1,
+  "enableServerAudio": 1,
+  "serverAudioStated": 0,
+  "serverReadChunkSize": 256,
+  "f0Detector": "pm",
+  "serverInputDeviceId": -1,
+  "serverOutputDeviceId": -1,
+  "serverMonitorDeviceId": -1,
+  "serverAudioSampleRate": 48000,
+  "serverInputAudioGain": 1.0,
+  "serverOutputAudioGain": 1.0,
+  "serverMonitorAudioGain": 0.0,
+  "silentThreshold": 0.001
+}

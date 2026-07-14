@@ -1,7 +1,8 @@
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { authenticate, publicSessionUser } from "./auth.js";
 import { adminDb } from "./firebase-admin.js";
-import { collections, loadActiveNotifications, loadSupport, stableId } from "./data.js";
+import { collections, loadSupport, stableId } from "./data.js";
+import { loadUserNotifications } from "./user-feature-handlers.js";
 import {
   HttpError,
   booleanField,
@@ -36,7 +37,7 @@ export async function sessionBootstrap(request: ApiRequest): Promise<Record<stri
 
   const [support, notifications] = await Promise.all([
     loadSupport(),
-    loadActiveNotifications(20, user.role, user.uid),
+    loadUserNotifications(user),
   ]);
   const session = publicSessionUser(user);
   return {
@@ -130,6 +131,7 @@ export async function telemetryEvent(request: ApiRequest): Promise<Record<string
   }
 
   const details = safeTelemetryDetails(body.details || body.metadata);
+  const detailFields = details as Record<string, unknown>;
   const engineMode =
     stringField(body, "engineMode", { max: 30 }) ||
     stringField(body, "engine", { max: 30 }) ||
@@ -157,29 +159,56 @@ export async function telemetryEvent(request: ApiRequest): Promise<Record<string
 
   if (sessionId && new Set(["session_started", "session.started", "session_stopped", "session.stopped"]).has(type)) {
     const reference = database.collection(collections.sessions).doc(stableId(`${user.uid}:${sessionId}`));
+    const meteredSession = await reference.get();
+    // A telemetry event is not authorization to create a session. Only enrich
+    // a record that the authenticated usage service already prepared.
+    if (meteredSession.exists && meteredSession.data()?.uid === user.uid) {
     const common = {
       uid: user.uid,
       email: user.email,
       displayName: user.displayName,
       clientSessionId: sessionId,
       engineMode,
-      voiceName: stringField(body, "voiceName", { max: 160 }) || null,
-      modelName: stringField(body, "modelName", { max: 200 }) || null,
+      voiceName:
+        stringField(body, "voiceName", { max: 160 }) ||
+        stringField(detailFields, "voiceName", { max: 160 }) ||
+        null,
+      modelName:
+        stringField(body, "modelName", { max: 200 }) ||
+        stringField(detailFields, "modelName", { max: 200 }) ||
+        null,
       updatedAt: now,
     };
     if (type === "session_started" || type === "session.started") {
-      await reference.set({ ...common, status: "live", startedAt: now }, { merge: true });
+      // Usage preparation/activation owns the billing lifecycle fields. Client
+      // telemetry may enrich the record, but it must not be able to create a
+      // free "live" session or override the metering state.
+      await reference.set({ ...common, telemetryStartedAt: now }, { merge: true });
     } else {
       await reference.set(
         {
           ...common,
-          status: "completed",
-          endedAt: now,
-          durationSeconds: numericField(body, "durationSeconds", { min: 0, max: 2_592_000 }) ?? null,
-          latencyMs: numericField(body, "latencyMs", { min: 0, max: 120_000 }) ?? null,
+          telemetryEndedAt: now,
+          clientDurationSeconds:
+            numericField(body, "durationSeconds", { min: 0, max: 2_592_000 }) ??
+            numericField(detailFields, "durationSeconds", { min: 0, max: 2_592_000 }) ??
+            null,
+          latencyMs:
+            numericField(body, "latencyMs", { min: 0, max: 120_000 }) ??
+            numericField(detailFields, "latencyMs", { min: 0, max: 120_000 }) ??
+            null,
+          sampleRate:
+            numericField(body, "sampleRate", { min: 0, max: 384_000, integer: true }) ??
+            numericField(detailFields, "sampleRate", { min: 0, max: 384_000, integer: true }) ??
+            null,
+          chunkSize:
+            numericField(body, "chunkSize", { min: 0, max: 65_536, integer: true }) ??
+            numericField(detailFields, "chunkSize", { min: 0, max: 65_536, integer: true }) ??
+            null,
         },
         { merge: true },
       );
+    }
     }
   }
 

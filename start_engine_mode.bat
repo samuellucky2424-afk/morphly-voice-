@@ -20,7 +20,16 @@ echo [Morphly] Unknown engine mode: %MORPHLY_ENGINE_MODE% 1>&2
 exit /b 2
 
 :start_rvc
-set "MORPHLY_PYTHON=%~dp0.venv\Scripts\python.exe"
+if not defined MORPHLY_PYTHON (
+    if exist "%~dp0runtime\python\python.exe" (
+        set "MORPHLY_PYTHON=%~dp0runtime\python\python.exe"
+        set "PYTHONHOME=%~dp0runtime\python"
+        set "PYTHONNOUSERSITE=1"
+        set "PYTHONDONTWRITEBYTECODE=1"
+    ) else (
+        set "MORPHLY_PYTHON=%~dp0.venv\Scripts\python.exe"
+    )
+)
 if not exist "%MORPHLY_PYTHON%" (
     echo [Morphly] Python runtime is missing: %MORPHLY_PYTHON% 1>&2
     exit /b 3

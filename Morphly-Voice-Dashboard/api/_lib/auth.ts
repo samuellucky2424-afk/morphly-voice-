@@ -44,8 +44,10 @@ async function ensureUserProfile(token: DecodedIdToken): Promise<DocumentData> {
   return database.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(reference);
     const existing = snapshot.exists ? snapshot.data() || {} : {};
-    const existingRole = existing.role === "admin" ? "admin" : "user";
-    const role: UserRole = claimAdmin || existingRole === "admin" ? "admin" : "user";
+    // Firebase custom claims are the sole authority for elevation. Persisting
+    // an old profile.role must never make administrator access "sticky" after
+    // the claim is removed.
+    const role: UserRole = claimAdmin ? "admin" : "user";
     const status: UserStatus = existing.status === "suspended" ? "suspended" : "active";
     const credits = Number.isSafeInteger(existing.credits) && existing.credits >= 0
       ? existing.credits
@@ -87,10 +89,7 @@ export async function authenticate(request: ApiRequest): Promise<AuthenticatedUs
     throw new HttpError(403, "account_suspended", "This Morphly account has been suspended.");
   }
 
-  const role: UserRole =
-    tokenHasAdminClaim(token) || profile.role === "admin"
-      ? "admin"
-      : "user";
+  const role: UserRole = tokenHasAdminClaim(token) ? "admin" : "user";
 
   return {
     uid: token.uid,

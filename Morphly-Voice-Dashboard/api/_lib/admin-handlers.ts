@@ -5,6 +5,7 @@ import {
   adminUserJson,
   collections,
   jsonValue,
+  loadBillingConfig,
   loadSupport,
   notificationJson,
   stableId,
@@ -22,6 +23,7 @@ import {
   stringField,
   type ApiRequest,
 } from "./http.js";
+import { deliverNotificationPush } from "./user-feature-handlers.js";
 
 async function queryCount(query: Query): Promise<number> {
   const snapshot = await query.count().get();
@@ -38,6 +40,7 @@ function validatedUid(value: string): string {
 export async function adminOverview(request: ApiRequest): Promise<Record<string, unknown>> {
   await requireAdmin(request);
   const database = adminDb();
+  const reportingCurrency = (await loadBillingConfig()).currency;
   const users = database.collection(collections.users);
   const payments = database.collection(collections.payments);
   const presence = database.collection(collections.presence);
@@ -81,7 +84,6 @@ export async function adminOverview(request: ApiRequest): Promise<Record<string,
   ]);
 
   const revenueSnapshot = await payments.where("status", "==", "successful").limit(1000).get();
-  const reportingCurrency = process.env.MORPHLY_REPORTING_CURRENCY || "USD";
   const totalRevenue = revenueSnapshot.docs.reduce((sum, document) => {
     if (String(document.data().currency || reportingCurrency).toUpperCase() !== reportingCurrency.toUpperCase()) return sum;
     const amount = Number(document.data().amount);
@@ -105,6 +107,9 @@ export async function adminOverview(request: ApiRequest): Promise<Record<string,
     },
     { rvc: 0, beatrice: 0 },
   );
+  const reportingChartPayments = chartPayments.docs.filter(
+    (document) => String(document.data().currency || "").toUpperCase() === reportingCurrency,
+  );
   const metrics = {
     totalUsers,
     activeUsers,
@@ -122,11 +127,12 @@ export async function adminOverview(request: ApiRequest): Promise<Record<string,
     metrics,
     userGrowth: dailySeries(chartUsers.docs.map((document) => document.data().createdAt), () => 1),
     revenue: dailySeries(
-      chartPayments.docs.map((document) => document.data().createdAt),
-      (index) => Number(chartPayments.docs[index]?.data().amount) || 0,
+      reportingChartPayments.map((document) => document.data().createdAt),
+      (index) => Number(reportingChartPayments[index]?.data().amount) || 0,
     ),
     sessions: dailySeries(chartSessions.docs.map((document) => document.data().startedAt), () => 1),
     engineUsage,
+    reportingCurrency,
     generatedAt: new Date().toISOString(),
     meta: {
       activeToday,
@@ -578,10 +584,36 @@ export async function createNotification(request: ApiRequest): Promise<Record<st
     createdAt: timestamp,
   });
   await batch.commit();
+  let push = { attempted: 0, delivered: 0, failed: 0 };
+  const nowMillis = Date.now();
+  const shouldPush = notification.active
+    && (!startsAt || startsAt.toMillis() <= nowMillis)
+    && (!expiresAt || expiresAt.toMillis() > nowMillis);
+  try {
+    if (!shouldPush) throw new Error("scheduled_or_inactive_notification");
+    push = await deliverNotificationPush({
+      notificationId: reference.id,
+      title,
+      message,
+      audience,
+      selectedUserIds,
+      actionUrl: notification.actionUrl,
+    });
+    if (push.delivered > 0 || push.failed > 0) {
+      await reference.update({ deliveryCount: FieldValue.increment(push.delivered) });
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "scheduled_or_inactive_notification") {
+      // Scheduled notices become visible through authenticated polling at startsAt.
+    } else {
+    console.error("[Morphly API] Notification push delivery failed", error);
+    }
+  }
   return notificationJson(reference.id, {
     ...notification,
     createdAt: Timestamp.now(),
     updatedAt: Timestamp.now(),
+    deliveryCount: push.delivered,
   }, true);
 }
 
