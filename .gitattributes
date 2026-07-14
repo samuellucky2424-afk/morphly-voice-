@@ -1,0 +1,2 @@
+# Keep CRLF bytes in Git archives; cmd.exe can miss labels in LF-only scripts.
+*.bat binary
