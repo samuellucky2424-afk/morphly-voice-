@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "plugins": [],
+    "target": "ES2022",
+    "types": ["node"]
+  },
+  "include": [
+    "api/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next",
+    ".vinext",
+    ".sites-runtime",
+    "dist",
+    "dist-static"
+  ]
+}
