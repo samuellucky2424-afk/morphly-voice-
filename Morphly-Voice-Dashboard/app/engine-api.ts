@@ -79,6 +79,9 @@ export class EngineApiError extends Error {
 const REQUEST_TIMEOUT = 12_000;
 const RVC_SETTINGS_TIMEOUT = 60_000;
 const RVC_MODEL_TIMEOUT = 360_000;
+const RVC_UPLOAD_TIMEOUT = 120_000;
+const RVC_UPLOAD_CHUNK_BYTES = 1024 * 1024;
+const RVC_UPLOAD_MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
 let engineAuthorizationToken = "";
 
 export function setEngineAuthorizationToken(token: string | null) {
@@ -290,6 +293,53 @@ function findSlot(slots: Record<string, unknown>[], slotIndex: number) {
   return slots.find((slot) => numeric(slot.slotIndex, -1) === slotIndex);
 }
 
+function rvcUploadFilename(file: File) {
+  const basename = file.name.replace(/\\/g, "/").split("/").pop()?.trim() || "";
+  const sanitized = basename.replace(/[^A-Za-z0-9._ -]/g, "_").slice(-180);
+  if (!sanitized || sanitized === "." || sanitized === "..") {
+    throw new EngineApiError("The selected model has an invalid filename.");
+  }
+  return sanitized;
+}
+
+function assertRvcUploadFile(file: File, extensions: string[], label: string) {
+  const extension = file.name.split(".").pop()?.toLowerCase() || "";
+  if (!extensions.includes(extension)) {
+    throw new EngineApiError(`${label} must be ${extensions.map((item) => `.${item}`).join(" or ")}. Extract ZIP downloads before selecting the model files.`);
+  }
+  if (file.size <= 0) throw new EngineApiError(`${label} is empty.`);
+  if (file.size > RVC_UPLOAD_MAX_FILE_BYTES) throw new EngineApiError(`${label} is larger than the 2 GB upload limit.`);
+}
+
+function emptyRvcSlot(info: EngineInfo) {
+  const slot = info.slots.find((candidate) => {
+    const slotIndex = numeric(candidate.slotIndex, -1);
+    return Number.isSafeInteger(slotIndex) && slotIndex >= 0 && candidate.isLoaded !== true;
+  });
+  const slotIndex = slot ? numeric(slot.slotIndex, -1) : -1;
+  if (slotIndex < 0) throw new EngineApiError("Every RVC model slot is already in use. Remove an unused model before uploading another voice.");
+  return slotIndex;
+}
+
+async function uploadRvcFile(file: File, filename: string, completedBytes: number, totalBytes: number, onProgress: (percent: number) => void) {
+  const chunkCount = Math.ceil(file.size / RVC_UPLOAD_CHUNK_BYTES);
+  for (let index = 0; index < chunkCount; index += 1) {
+    const start = index * RVC_UPLOAD_CHUNK_BYTES;
+    const chunk = file.slice(start, Math.min(file.size, start + RVC_UPLOAD_CHUNK_BYTES));
+    const body = new FormData();
+    body.append("file", chunk, `${filename}.part`);
+    body.append("filename", `${filename}_${index}`);
+    await requestJson("/upload_file", { method: "POST", body }, RVC_UPLOAD_TIMEOUT);
+    const uploadedBytes = Math.min(file.size, start + chunk.size);
+    onProgress(Math.min(90, Math.round(((completedBytes + uploadedBytes) / totalBytes) * 90)));
+  }
+
+  const concatBody = new FormData();
+  concatBody.append("filename", filename);
+  concatBody.append("filenameChunkNum", String(chunkCount));
+  await requestJson("/concat_uploaded_file", { method: "POST", body: concatBody }, RVC_UPLOAD_TIMEOUT);
+}
+
 function commonEngineInfo(
   mode: EngineMode,
   raw: Record<string, unknown>,
@@ -410,6 +460,63 @@ async function getBeatriceInfo(): Promise<EngineInfo> {
 
 export function getEngineInfo(mode: EngineMode) {
   return mode === "rvc" ? getRvcInfo() : getBeatriceInfo();
+}
+
+export type RvcModelUpload = {
+  model: File;
+  index?: File | null;
+};
+
+export type RvcModelUploadProgress = {
+  phase: "uploading" | "installing";
+  percent: number;
+};
+
+export async function uploadRvcModel(
+  info: EngineInfo,
+  files: RvcModelUpload,
+  onProgress: (progress: RvcModelUploadProgress) => void,
+) {
+  if (info.mode !== "rvc") throw new EngineApiError("Switch to the RVC engine before uploading an RVC voice.");
+  assertRvcUploadFile(files.model, ["pth", "onnx"], "RVC model");
+  if (files.index) assertRvcUploadFile(files.index, ["index", "bin"], "RVC index");
+
+  const slot = emptyRvcSlot(info);
+  const modelName = rvcUploadFilename(files.model);
+  const indexName = files.index ? rvcUploadFilename(files.index) : null;
+  const totalBytes = files.model.size + (files.index?.size || 0);
+  let completedBytes = 0;
+
+  onProgress({ phase: "uploading", percent: 0 });
+  await uploadRvcFile(files.model, modelName, completedBytes, totalBytes, (percent) => onProgress({ phase: "uploading", percent }));
+  completedBytes += files.model.size;
+  if (files.index && indexName) {
+    await uploadRvcFile(files.index, indexName, completedBytes, totalBytes, (percent) => onProgress({ phase: "uploading", percent }));
+  }
+
+  onProgress({ phase: "installing", percent: 95 });
+  const params = {
+    voiceChangerType: "RVC",
+    slot,
+    isSampleMode: false,
+    sampleId: null,
+    files: [
+      { name: modelName, kind: "rvcModel", dir: "" },
+      ...(indexName ? [{ name: indexName, kind: "rvcIndex", dir: "" }] : []),
+    ],
+    params: {},
+  };
+  const body = new FormData();
+  body.append("slot", String(slot));
+  body.append("isHalf", "false");
+  body.append("params", JSON.stringify(params));
+  await requestJson("/load_model", { method: "POST", body }, RVC_MODEL_TIMEOUT);
+
+  const refreshed = await getRvcInfo();
+  const installed = refreshed.slots.find((candidate) => numeric(candidate.slotIndex, -1) === slot && candidate.isLoaded === true);
+  if (!installed) throw new EngineApiError("The RVC engine received the files but could not install this model. Confirm it is a compatible RVC .pth or .onnx file.");
+  onProgress({ phase: "installing", percent: 100 });
+  return { info: refreshed, slot };
 }
 
 async function updateRvcSetting(key: string, value: unknown, timeout = REQUEST_TIMEOUT) {

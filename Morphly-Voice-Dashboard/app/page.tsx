@@ -45,7 +45,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AdminDashboard from "./AdminDashboard";
 import { AuthGate, usePlatformAuth } from "./AuthGate";
 import {
@@ -83,6 +83,7 @@ import {
   stopConversionOnPageHide,
   setEngineAuthorizationToken,
   switchGatewayMode,
+  uploadRvcModel,
   updateRuntimeSettings,
 } from "./engine-api";
 import { disablePushNotifications, enablePushNotifications, type EnabledPushNotifications } from "./push-notifications";
@@ -236,6 +237,15 @@ function formatTime(totalSeconds: number) {
   return `${minutes}:${seconds}`;
 }
 
+function formatCreditPackagePrice(amount: number, currency: BillingConfig["currency"]) {
+  const locale = currency === "NGN" ? "en-NG" : "en-US";
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency,
+    currencyDisplay: "narrowSymbol",
+  }).format(amount);
+}
+
 function voiceInitials(name: string) {
   return name
     .split(/\s+/)
@@ -317,6 +327,7 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
   const [mobileMenu, setMobileMenu] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [creditsOpen, setCreditsOpen] = useState(false);
+  const [rvcUploadOpen, setRvcUploadOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
   const [activeNavigation, setActiveNavigation] = useState<NavigationTarget>("dashboard");
@@ -329,6 +340,12 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
   const [paymentBusy, setPaymentBusy] = useState("");
   const [selectedPlanId, setSelectedPlanId] = useState("");
   const [billingConfig, setBillingConfig] = useState<BillingConfig | null>(null);
+  const [billingLoading, setBillingLoading] = useState(false);
+  const [billingError, setBillingError] = useState("");
+  const [rvcModelFile, setRvcModelFile] = useState<File | null>(null);
+  const [rvcIndexFile, setRvcIndexFile] = useState<File | null>(null);
+  const [rvcUploadProgress, setRvcUploadProgress] = useState<{ phase: "uploading" | "installing"; percent: number } | null>(null);
+  const [rvcUploadError, setRvcUploadError] = useState("");
   const [sessionHistory, setSessionHistory] = useState<SessionRecord[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
@@ -341,7 +358,6 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
     female: { atStart: true, atEnd: false },
     other: { atStart: true, atEnd: false },
   });
-  const fileInput = useRef<HTMLInputElement>(null);
   const voiceSectionRef = useRef<HTMLElement>(null);
   const settingsSectionRef = useRef<HTMLElement>(null);
   const activeSessionRef = useRef<ActiveSessionSnapshot | null>(null);
@@ -517,6 +533,24 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
     return result;
   }, [token]);
 
+  const refreshBillingPackages = useCallback(async () => {
+    setBillingLoading(true);
+    setBillingError("");
+    try {
+      const latest = await getBillingConfig(token);
+      const enabledPlans = latest.plans.filter((plan) => plan.enabled);
+      setBillingConfig(latest);
+      setSelectedPlanId((current) => enabledPlans.some((plan) => plan.id === current) ? current : enabledPlans[0]?.id || "");
+      return latest;
+    } catch (error) {
+      const message = readableError(error);
+      setBillingError(message);
+      throw error;
+    } finally {
+      setBillingLoading(false);
+    }
+  }, [token]);
+
   useEffect(() => {
     let cancelled = false;
     void Promise.allSettled([
@@ -537,8 +571,14 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
       else failures.push(`Session history: ${readableError(historyResult.reason)}`);
       if (billingResult.status === "fulfilled") {
         setBillingConfig(billingResult.value);
-        setSelectedPlanId((current) => current || billingResult.value.plans[0]?.id || "");
-      } else failures.push(`Billing: ${readableError(billingResult.reason)}`);
+        const enabledPlans = billingResult.value.plans.filter((plan) => plan.enabled);
+        setSelectedPlanId((current) => enabledPlans.some((plan) => plan.id === current) ? current : enabledPlans[0]?.id || "");
+        setBillingError("");
+      } else {
+        const message = readableError(billingResult.reason);
+        setBillingError(message);
+        failures.push(`Billing: ${message}`);
+      }
       setCloudMessage(failures.join(" "));
     });
     return () => { cancelled = true; };
@@ -850,10 +890,50 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
     }, "Voice and audio settings saved.");
   };
 
-  const onModelUpload = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) setToast(`Model import for ${file.name} is not enabled on this dashboard yet.`);
-    event.target.value = "";
+  const openRvcUpload = () => {
+    if (isRunning) {
+      setToast("Stop the voice changer before installing another RVC voice.");
+      return;
+    }
+    setRvcUploadError("");
+    setRvcUploadOpen(true);
+  };
+
+  const closeRvcUpload = () => {
+    if (rvcUploadProgress) return;
+    setRvcUploadOpen(false);
+    setRvcModelFile(null);
+    setRvcIndexFile(null);
+    setRvcUploadError("");
+  };
+
+  const installRvcVoice = async () => {
+    if (!engineInfo || engineMode !== "rvc" || !engineReady) {
+      setRvcUploadError("Start the RVC engine before uploading a voice.");
+      return;
+    }
+    if (!rvcModelFile) {
+      setRvcUploadError("Choose the extracted RVC .pth or .onnx model file.");
+      return;
+    }
+    setRvcUploadError("");
+    setRvcUploadProgress({ phase: "uploading", percent: 0 });
+    try {
+      const result = await uploadRvcModel(engineInfo, { model: rvcModelFile, index: rvcIndexFile }, setRvcUploadProgress);
+      applyEngineInfo(result.info);
+      const uploadedVoice = result.info.voices.find((voice) => voice.slot === result.slot);
+      if (uploadedVoice) setSelectedVoice(dashboardVoice(uploadedVoice, result.info.voices.indexOf(uploadedVoice)));
+      setVoiceTab("my");
+      setSearch("");
+      setRvcUploadProgress(null);
+      setRvcUploadOpen(false);
+      setRvcModelFile(null);
+      setRvcIndexFile(null);
+      setToast(`${uploadedVoice?.name || rvcModelFile.name} was added to My voices.`);
+    } catch (error) {
+      setRvcUploadProgress(null);
+      setRvcUploadError(readableError(error));
+    }
   };
 
   const reconcilePaymentStatus = async (txRef: string, attempts = 6) => {
@@ -975,6 +1055,11 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
       // the verification callback. This prevents accidental duplicate checkouts.
       if (!checkoutOpened) setPaymentBusy("");
     }
+  };
+
+  const openCredits = () => {
+    setCreditsOpen(true);
+    void refreshBillingPackages().catch(() => undefined);
   };
 
   const openNotifications = async () => {
@@ -1288,6 +1373,7 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
   const firstName = profileName.trim().split(/\s+/)[0] || "Creator";
   const profileInitials = voiceInitials(profileName);
   const currentHeading = navigationHeadings[activeNavigation];
+  const availableCreditPlans = billingConfig?.plans.filter((plan) => plan.enabled) || [];
 
   return (
     <div className="app-shell">
@@ -1305,7 +1391,7 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
           <button className="mobile-close icon-button" onClick={() => setMobileMenu(false)} aria-label="Close menu"><X size={20} /></button>
         </div>
 
-        <button className="credit-card" onClick={() => setCreditsOpen(true)}>
+        <button className="credit-card" onClick={openCredits}>
           <span className="credit-icon"><Coins size={18} /></span>
           <span className="credit-copy">
             <small>Available credits</small>
@@ -1424,8 +1510,7 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
                   <Search size={16} />
                   <input aria-label="Search voices" placeholder="Name or gender" value={search} onChange={(event) => setSearch(event.target.value)} />
                 </label>
-                <button className="primary-button compact" disabled={engineMode !== "rvc" || !engineReady} onClick={() => fileInput.current?.click()}><Upload size={16} /> Add voice</button>
-                <input ref={fileInput} className="visually-hidden" type="file" accept=".pth,.index,.onnx,.zip" onChange={onModelUpload} />
+                <button className="primary-button compact" disabled={engineMode !== "rvc" || !engineReady || isBusy || Boolean(rvcUploadProgress)} title={engineMode !== "rvc" ? "Switch to RVC to add an RVC voice" : !engineReady ? "Wait for the RVC engine to become ready" : isBusy ? "Wait for the current engine operation to finish" : "Install an extracted RVC model"} onClick={openRvcUpload}><Upload size={16} /> Add voice</button>
               </div>
             </div>
 
@@ -1715,24 +1800,73 @@ function VoiceWorkspace({ session, token, onSignOut, onRefreshSession }: VoiceWo
             <li><span>4</span><div><strong>Set your app input</strong><p>When using VB-Cable, choose CABLE Output as the microphone in Discord, OBS, Zoom or your game.</p></div></li>
             <li><span>5</span><div><strong>Start conversion</strong><p>Press Start voice changer, speak normally, then fine-tune pitch and gain. Use headphones when listening through Speakers to prevent feedback.</p></div></li>
           </ol>
+          <section className="guide-rvc-models">
+            <div className="guide-rvc-heading"><Upload size={18} /><div><strong>Add your own RVC voice</strong><span>Use a compatible RVC model that you have permission to use.</span></div></div>
+            <ol>
+              <li>Visit <a href="https://voice-models.com/" target="_blank" rel="noreferrer">voice-models.com <ExternalLink size={12} /></a> and download an RVC voice model.</li>
+              <li>Extract the downloaded ZIP file. Do not upload the ZIP itself.</li>
+              <li>In Morphly, switch to the <strong>RVC engine</strong> and stop any active conversion.</li>
+              <li>Select <strong>Add voice</strong>, choose the extracted <code>.pth</code> or <code>.onnx</code> model, then optionally choose its <code>.index</code> or <code>.bin</code> file.</li>
+              <li>Select <strong>Upload & install voice</strong>. When it finishes, the model appears under My voices.</li>
+            </ol>
+          </section>
           <button className="primary-button modal-action" onClick={() => setGuideOpen(false)}>Got it, continue</button>
+        </Modal>
+      )}
+
+      {rvcUploadOpen && (
+        <Modal title="Add an RVC voice" icon={<Upload size={20} />} onClose={closeRvcUpload}>
+          <p className="modal-intro">Download an RVC model, extract its ZIP file, then select the model file below. The index file improves similarity when the model includes one.</p>
+          <a className="model-source-link" href="https://voice-models.com/" target="_blank" rel="noreferrer"><Library size={17} /><span><small>Browse third-party RVC models</small><strong>voice-models.com</strong></span><ExternalLink size={14} /></a>
+          <div className="rvc-upload-fields">
+            <label>
+              <span>RVC model file <b>Required</b></span>
+              <input type="file" accept=".pth,.onnx" disabled={Boolean(rvcUploadProgress)} onChange={(event) => { setRvcModelFile(event.target.files?.[0] || null); setRvcUploadError(""); }} />
+              <small>{rvcModelFile ? `${rvcModelFile.name} · ${(rvcModelFile.size / (1024 * 1024)).toFixed(1)} MB` : "Choose one extracted .pth or .onnx file."}</small>
+            </label>
+            <label>
+              <span>Feature index <em>Optional</em></span>
+              <input type="file" accept=".index,.bin" disabled={Boolean(rvcUploadProgress)} onChange={(event) => { setRvcIndexFile(event.target.files?.[0] || null); setRvcUploadError(""); }} />
+              <small>{rvcIndexFile ? `${rvcIndexFile.name} · ${(rvcIndexFile.size / (1024 * 1024)).toFixed(1)} MB` : "Choose the matching .index or .bin file when supplied."}</small>
+            </label>
+          </div>
+          {rvcUploadProgress && (
+            <div className="rvc-upload-progress" role="status">
+              <div><span>{rvcUploadProgress.phase === "uploading" ? "Uploading model files" : "Installing voice model"}</span><strong>{rvcUploadProgress.percent}%</strong></div>
+              <i><b style={{ width: `${rvcUploadProgress.percent}%` }} /></i>
+              <small>{rvcUploadProgress.phase === "uploading" ? "Keep Morphly open until every file reaches the local engine." : "The RVC engine is validating the model. This can take longer on CPU."}</small>
+            </div>
+          )}
+          {rvcUploadError && <div className="credit-catalog-error" role="alert">{rvcUploadError}</div>}
+          <div className="rvc-upload-actions">
+            <button className="secondary-button" type="button" disabled={Boolean(rvcUploadProgress)} onClick={closeRvcUpload}>Cancel</button>
+            <button className="primary-button" type="button" disabled={!rvcModelFile || Boolean(rvcUploadProgress)} onClick={() => void installRvcVoice()}>{rvcUploadProgress ? rvcUploadProgress.phase === "uploading" ? `Uploading ${rvcUploadProgress.percent}%` : "Installing..." : "Upload & install voice"}</button>
+          </div>
+          <p className="model-rights-note">Only install voices you are authorized to use. Morphly does not own or verify third-party model rights.</p>
         </Modal>
       )}
 
       {creditsOpen && (
         <Modal title="Add Morphly credits" icon={<Coins size={20} />} onClose={() => setCreditsOpen(false)}>
           <p className="modal-intro">Live conversion costs <strong>2 credits per 10-second connection block</strong>. The first block is reserved when the engine starts. Your current balance is <strong>{credits.toLocaleString()} credits</strong>.</p>
+          <div className="credit-catalog-toolbar">
+            <span>{billingLoading ? "Refreshing packages..." : billingConfig ? `${availableCreditPlans.length} package${availableCreditPlans.length === 1 ? "" : "s"} in ${billingConfig.currency}` : "Package catalog unavailable"}</span>
+            <button type="button" disabled={billingLoading} onClick={() => void refreshBillingPackages().catch(() => undefined)}><RefreshCw className={billingLoading ? "catalog-spin" : ""} size={14} /> Refresh</button>
+          </div>
+          {billingError && <div className="credit-catalog-error" role="alert">{billingError}</div>}
           <div className="plan-grid">
-            {billingConfig?.plans.filter((plan) => plan.enabled).map((plan) => (
+            {availableCreditPlans.map((plan) => (
               <button className={`plan-card ${plan.bestValue ? "best" : ""} ${selectedPlanId === plan.id ? "selected" : ""}`} disabled={Boolean(paymentBusy)} key={plan.id} onClick={() => setSelectedPlanId(plan.id)}>
                 {plan.bestValue && <small>Best value</small>}
+                <em>{plan.label}</em>
                 <strong>{plan.credits.toLocaleString()}</strong><span>credits</span>
-                <b>{new Intl.NumberFormat(undefined, { style: "currency", currency: billingConfig.currency }).format(plan.amount)}</b>
+                <b>{formatCreditPackagePrice(plan.amount, plan.currency)}</b>
               </button>
             ))}
           </div>
-          {!billingConfig?.plans.length && <div className="panel-empty"><Coins size={22} /><strong>Credit packages unavailable</strong><span>Ask an administrator to configure billing packages.</span></div>}
-          <button className="primary-button modal-action" type="button" disabled={!selectedPlanId || Boolean(paymentBusy)} onClick={() => void beginCheckout(selectedPlanId)}>
+          {!availableCreditPlans.length && !billingLoading && <div className="panel-empty"><Coins size={22} /><strong>Credit packages unavailable</strong><span>Ask an administrator to publish at least one enabled package.</span></div>}
+          {!availableCreditPlans.length && billingLoading && <div className="panel-empty"><RefreshCw className="catalog-spin" size={22} /><strong>Loading credit packages</strong><span>Synchronizing the current prices from Morphly billing.</span></div>}
+          <button className="primary-button modal-action" type="button" disabled={!selectedPlanId || Boolean(paymentBusy) || billingLoading || Boolean(billingError)} onClick={() => void beginCheckout(selectedPlanId)}>
             {paymentBusy ? "Opening secure payment..." : "Proceed to payment"}
           </button>
           <p className="demo-note">Flutterwave opens in a secure inline payment window. Credits are added only after server verification.</p>

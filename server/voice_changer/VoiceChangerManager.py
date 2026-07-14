@@ -10,7 +10,7 @@ from voice_changer.Local.ServerDevice import ServerDevice, ServerDeviceCallbacks
 from voice_changer.ModelSlotManager import ModelSlotManager
 from voice_changer.RVC.RVCModelMerger import RVCModelMerger
 from voice_changer.VoiceChanger import VoiceChanger
-from const import STORED_SETTING_FILE, UPLOAD_DIR, StaticSlot
+from const import MAX_SLOT_NUM, STORED_SETTING_FILE, UPLOAD_DIR, StaticSlot
 from voice_changer.VoiceChangerV2 import VoiceChangerV2
 from voice_changer.utils.LoadModelParams import LoadModelParamFile, LoadModelParams
 from voice_changer.utils.ModelMerger import MergeElement, ModelMergerRequest
@@ -25,6 +25,9 @@ from typing import Any
 import re
 
 logger = VoiceChangaerLogger.get_instance().getLogger()
+
+RVC_UPLOAD_MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
+RVC_UPLOAD_MAX_TOTAL_BYTES = 3 * 1024 * 1024 * 1024
 
 
 @dataclass()
@@ -131,6 +134,48 @@ class VoiceChangerManager(ServerDeviceCallbacks):
             cls._instance = cls(params)
         return cls._instance
 
+    def _validate_direct_model_upload(self, params: LoadModelParams):
+        supported_types = {"RVC", "MMVCv13", "MMVCv15", "so-vits-svc-40", "DDSP-SVC", "Diffusion-SVC", "Beatrice", "LLVC", "EasyVC"}
+        if params.voiceChangerType not in supported_types:
+            raise ValueError("Unsupported voice changer type.")
+        if isinstance(params.slot, bool) or not isinstance(params.slot, int) or params.slot < 0 or params.slot >= MAX_SLOT_NUM:
+            raise ValueError(f"Model slot must be between 0 and {MAX_SLOT_NUM - 1}.")
+        if not isinstance(params.files, list) or not params.files or len(params.files) > 10:
+            raise ValueError("A model upload must contain between 1 and 10 files.")
+
+        upload_root = os.path.realpath(UPLOAD_DIR)
+        total_size = 0
+        for file in params.files:
+            name = file.name if isinstance(file.name, str) else ""
+            directory = file.dir if isinstance(file.dir, str) else ""
+            if not name or name in {".", ".."} or os.path.basename(name) != name or "/" in name or "\\" in name:
+                raise ValueError("Uploaded model filenames must not contain paths.")
+            normalized_directory = directory.replace("\\", "/").strip("/")
+            if directory.startswith(("/", "\\")) or ".." in normalized_directory.split("/"):
+                raise ValueError("Uploaded model directories must stay inside the upload area.")
+            source_path = os.path.realpath(os.path.join(upload_root, normalized_directory, name))
+            if os.path.commonpath([upload_root, source_path]) != upload_root or not os.path.isfile(source_path):
+                raise ValueError(f"Uploaded model file '{name}' was not found.")
+            file_size = os.path.getsize(source_path)
+            if file_size <= 0 or file_size > RVC_UPLOAD_MAX_FILE_BYTES:
+                raise ValueError(f"Uploaded model file '{name}' must be between 1 byte and 2 GB.")
+            total_size += file_size
+        if total_size > RVC_UPLOAD_MAX_TOTAL_BYTES:
+            raise ValueError("Combined model upload exceeds the 3 GB limit.")
+
+        if params.voiceChangerType == "RVC":
+            model_files = [file for file in params.files if file.kind == "rvcModel"]
+            index_files = [file for file in params.files if file.kind == "rvcIndex"]
+            if len(model_files) != 1 or len(index_files) > 1 or len(model_files) + len(index_files) != len(params.files):
+                raise ValueError("RVC uploads require one model and at most one index file.")
+            if model_files[0].dir or os.path.splitext(model_files[0].name)[1].lower() not in {".pth", ".onnx"}:
+                raise ValueError("RVC model must be an extracted .pth or .onnx file.")
+            if index_files and (index_files[0].dir or os.path.splitext(index_files[0].name)[1].lower() not in {".index", ".bin"}):
+                raise ValueError("RVC index must be an extracted .index or .bin file.")
+            current_slot = self.modelSlotManager.get_slot_info(params.slot)
+            if getattr(current_slot, "voiceChangerType", None):
+                raise ValueError("The selected RVC model slot is already in use.")
+
     def loadModel(self, params: LoadModelParams):
         if params.isSampleMode:
             # サンプルダウンロード
@@ -140,6 +185,7 @@ class VoiceChangerManager(ServerDeviceCallbacks):
             info = {"status": "OK"}
             return info
         else:
+            self._validate_direct_model_upload(params)
             # アップローダ
             # ファイルをslotにコピー
             slotDir = os.path.join(
@@ -213,6 +259,7 @@ class VoiceChangerManager(ServerDeviceCallbacks):
                 self.modelSlotManager.save_model_slot(params.slot, slotInfo)
 
             logger.info(f"params, {params}")
+            return self.get_info()
 
     def get_info(self):
         data = asdict(self.settings)

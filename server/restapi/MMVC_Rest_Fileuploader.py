@@ -4,7 +4,7 @@ from typing import Union
 from fastapi import APIRouter
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from fastapi import UploadFile, File, Form
+from fastapi import UploadFile, File, Form, HTTPException
 
 from restapi.mods.FileUploader import upload_file, concat_file_chunks
 from voice_changer.VoiceChangerManager import VoiceChangerManager
@@ -40,6 +40,7 @@ class MMVC_Rest_Fileuploader:
             return JSONResponse(content=json_compatible_item_data)
         except Exception as e:
             print("[Voice Changer] post_upload_file ex:", e)
+            raise HTTPException(status_code=400, detail="The model upload chunk was rejected.") from e
 
     def post_concat_uploaded_file(self, filename: str = Form(...), filenameChunkNum: int = Form(...)):
         try:
@@ -48,6 +49,7 @@ class MMVC_Rest_Fileuploader:
             return JSONResponse(content=json_compatible_item_data)
         except Exception as e:
             print("[Voice Changer] post_concat_uploaded_file ex:", e)
+            raise HTTPException(status_code=400, detail="The uploaded model file could not be assembled.") from e
 
     def get_info(self):
         try:
@@ -87,6 +89,8 @@ class MMVC_Rest_Fileuploader:
             print("paramDict", paramDict)
             loadModelparams = LoadModelParams(**paramDict)
             loadModelparams.files = [LoadModelParamFile(**x) for x in paramDict["files"]]
+            if loadModelparams.slot != slot:
+                raise ValueError("Model slot fields do not match.")
             # print("paramDict", loadModelparams)
 
             info = self.voiceChangerManager.loadModel(loadModelparams)
@@ -96,6 +100,7 @@ class MMVC_Rest_Fileuploader:
             print("[Voice Changer] post_load_model ex:", e)
             import traceback
             traceback.print_exc()
+            raise HTTPException(status_code=400, detail="The RVC model could not be installed. Confirm that it is a compatible extracted model file.") from e
             
     def get_onnx(self):
         try:

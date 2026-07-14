@@ -3,6 +3,8 @@
 import {
   Activity,
   AlertCircle,
+  ArrowDown,
+  ArrowUp,
   BarChart3,
   Bell,
   CheckCircle2,
@@ -21,12 +23,14 @@ import {
   Plus,
   Radio,
   RefreshCw,
+  RotateCcw,
   Search,
   Send,
   Server,
   Settings,
   ShieldCheck,
   Sparkles,
+  Trash2,
   UserCheck,
   Users,
   WalletCards,
@@ -81,6 +85,7 @@ type AdminScreen =
   | "live"
   | "analytics"
   | "purchases"
+  | "billing"
   | "notifications"
   | "support"
   | "logs"
@@ -129,6 +134,7 @@ const screenDetails: Record<AdminScreen, { label: string; eyebrow: string; descr
   live: { label: "Live activity", eyebrow: "Operations", description: "Monitor active Morphly sessions without accessing user audio." },
   analytics: { label: "Analytics", eyebrow: "Product intelligence", description: "Understand adoption, engine usage, revenue, and performance." },
   purchases: { label: "Purchases", eyebrow: "Payments", description: "Inspect Flutterwave payments and credit fulfillment records." },
+  billing: { label: "Credit packages", eyebrow: "Billing catalog", description: "Create the credit packages users can purchase and publish their checkout currency and prices." },
   notifications: { label: "Notifications", eyebrow: "Communications", description: "Publish product notices to the Morphly user dashboard." },
   support: { label: "Customer care", eyebrow: "Support", description: "Manage the contact information displayed to customers." },
   logs: { label: "Software logs", eyebrow: "Diagnostics", description: "Trace engine, client, API, authentication, and payment events." },
@@ -147,6 +153,7 @@ const navigationGroups: Array<{
       { id: "live", icon: Radio },
       { id: "analytics", icon: BarChart3 },
       { id: "purchases", icon: CreditCard },
+      { id: "billing", icon: WalletCards },
     ],
   },
   {
@@ -161,6 +168,10 @@ const navigationGroups: Array<{
 ];
 
 const emptyAsyncState: AsyncState = { loading: false, error: "" };
+
+function cloneBillingConfig(config: BillingConfig): BillingConfig {
+  return { ...config, plans: config.plans.map((plan) => ({ ...plan })) };
+}
 
 function asRecord(value: unknown): UnknownRecord {
   return value !== null && typeof value === "object" ? value as UnknownRecord : {};
@@ -288,6 +299,7 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
     live: { ...emptyAsyncState },
     analytics: { ...emptyAsyncState },
     purchases: { ...emptyAsyncState },
+    billing: { ...emptyAsyncState },
     notifications: { ...emptyAsyncState },
     support: { ...emptyAsyncState },
     logs: { ...emptyAsyncState },
@@ -367,6 +379,10 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
         setLiveSessions(liveResult.items);
       } else if (screen === "purchases") {
         setPurchases((await getAdminPurchases(token)).items);
+      } else if (screen === "billing") {
+        const result = await getAdminBillingConfig(token);
+        setBillingConfig(result);
+        setBillingDraft(cloneBillingConfig(result));
       } else if (screen === "notifications") {
         setNotifications((await getAdminNotifications(token)).items);
       } else if (screen === "support") {
@@ -383,15 +399,12 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
       } else if (screen === "logs") {
         setLogs((await getAdminLogs(token)).items);
       } else if (screen === "settings") {
-        const [overviewResult, supportResult, billingResult] = await Promise.all([
+        const [overviewResult, supportResult] = await Promise.all([
           getAdminOverview(token),
           getSupportConfig(token),
-          getAdminBillingConfig(token),
         ]);
         setOverview(overviewResult);
         setSupportConfig(supportResult);
-        setBillingConfig(billingResult);
-        setBillingDraft(billingResult);
       }
       setScreenState(screen, { loading: false, error: "" });
     } catch (error) {
@@ -541,6 +554,10 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
     event.preventDefault();
     if (!billingDraft) return;
     setBillingError("");
+    if (billingDraft.plans.length < 1 || billingDraft.plans.length > 20) {
+      setBillingError("The catalog must contain between 1 and 20 credit packages.");
+      return;
+    }
     if (!billingDraft.plans.some((plan) => plan.enabled)) {
       setBillingError("At least one credit package must be enabled.");
       return;
@@ -549,17 +566,36 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
       setBillingError("Every package needs a name, positive credit amount, and positive price.");
       return;
     }
+    if (billingDraft.plans.filter((plan) => plan.bestValue).length > 1) {
+      setBillingError("Only one package can be marked as the best value.");
+      return;
+    }
     setBillingSubmitting(true);
     try {
-      const updated = await updateAdminBillingConfig(token, billingDraft);
+      const normalizedDraft: BillingConfig = {
+        ...billingDraft,
+        plans: billingDraft.plans.map((plan, index) => ({
+          ...plan,
+          amount: plan.amountMinor / 100,
+          currency: billingDraft.currency,
+          sortOrder: index,
+        })),
+      };
+      const updated = await updateAdminBillingConfig(token, normalizedDraft);
       setBillingConfig(updated);
-      setBillingDraft(updated);
+      setBillingDraft(cloneBillingConfig(updated));
       setToast(`Credit packages updated in ${updated.currency}.`);
     } catch (error) {
       setBillingError(readableError(error));
     } finally {
       setBillingSubmitting(false);
     }
+  };
+
+  const resetBillingDraft = () => {
+    if (!billingConfig) return;
+    setBillingDraft(cloneBillingConfig(billingConfig));
+    setBillingError("");
   };
 
   const filteredUsers = useMemo(() => {
@@ -602,7 +638,7 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
   const unreadNotifications = notifications.filter((item) => item.active).length;
   const details = screenDetails[activeScreen];
   const activeState = states[activeScreen];
-  const activeHasData = hasScreenData(activeScreen, { overview, users, liveSessions, purchases, notifications, supportConfig, logs });
+  const activeHasData = hasScreenData(activeScreen, { overview, users, liveSessions, purchases, billingConfig, notifications, supportConfig, logs });
 
   const signOut = async () => {
     setSigningOut(true);
@@ -721,6 +757,20 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
               {activeScreen === "live" && <LiveScreen sessions={filteredLiveSessions} total={liveSessions.length} search={liveSearch} engineFilter={liveEngineFilter} onSearch={setLiveSearch} onEngineFilter={setLiveEngineFilter} />}
               {activeScreen === "analytics" && <AnalyticsScreen overview={overview} purchases={purchases} liveSessions={liveSessions} />}
               {activeScreen === "purchases" && <PurchasesScreen purchases={filteredPurchases} total={purchases.length} search={purchaseSearch} statusFilter={purchaseStatusFilter} onSearch={setPurchaseSearch} onStatusFilter={setPurchaseStatusFilter} />}
+              {activeScreen === "billing" && (
+                <CreditPackagesScreen
+                  billingConfig={billingConfig}
+                  billingDraft={billingDraft}
+                  setBillingDraft={(config) => {
+                    setBillingDraft(config);
+                    setBillingError("");
+                  }}
+                  billingSubmitting={billingSubmitting}
+                  billingError={billingError}
+                  onSubmit={submitBillingConfig}
+                  onReset={resetBillingDraft}
+                />
+              )}
               {activeScreen === "notifications" && <NotificationsScreen notifications={notifications} draft={notificationDraft} setDraft={setNotificationDraft} submitting={notificationSubmitting} error={notificationError} onSubmit={submitNotification} />}
               {activeScreen === "support" && <SupportScreen config={supportConfig} draft={supportDraft} setDraft={setSupportDraft} submitting={supportSubmitting} error={supportError} onSubmit={submitSupportConfig} />}
               {activeScreen === "logs" && <LogsScreen logs={filteredLogs} total={logs.length} search={logSearch} levelFilter={logLevelFilter} onSearch={setLogSearch} onLevelFilter={setLogLevelFilter} />}
@@ -729,12 +779,6 @@ export default function AdminDashboard({ session, token, onSignOut }: AdminDashb
                   overview={overview}
                   supportConfig={supportConfig}
                   session={session}
-                  billingConfig={billingConfig}
-                  billingDraft={billingDraft}
-                  setBillingDraft={setBillingDraft}
-                  billingSubmitting={billingSubmitting}
-                  billingError={billingError}
-                  onSubmitBilling={submitBillingConfig}
                 />
               )}
             </>
@@ -777,6 +821,7 @@ type ScreenData = {
   users: AdminUser[];
   liveSessions: AdminLiveSession[];
   purchases: AdminPurchase[];
+  billingConfig: BillingConfig | null;
   notifications: AdminNotification[];
   supportConfig: SupportConfig | null;
   logs: AdminLogEntry[];
@@ -787,6 +832,7 @@ function hasScreenData(screen: AdminScreen, data: ScreenData) {
   if (screen === "users") return data.users.length > 0;
   if (screen === "live") return data.liveSessions.length > 0;
   if (screen === "purchases") return data.purchases.length > 0;
+  if (screen === "billing") return Boolean(data.billingConfig);
   if (screen === "notifications") return data.notifications.length > 0;
   if (screen === "support") return Boolean(data.supportConfig);
   return data.logs.length > 0;
@@ -885,64 +931,168 @@ function LogsScreen({ logs, total, search, levelFilter, onSearch, onLevelFilter 
   return <section className="admin-card admin-data-card"><div className="admin-data-toolbar"><div><span>Operational events</span><h3>Software and service logs</h3><p>{logs.length === total ? `${total} events` : `${logs.length} of ${total} events`}</p></div><div className="admin-filter-row"><SearchInput value={search} onChange={onSearch} placeholder="Message, service or ID" /><select value={levelFilter} aria-label="Filter logs by severity" onChange={(event) => onLevelFilter(event.target.value)}><option value="all">All levels</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option><option value="critical">Critical</option></select></div></div>{!logs.length ? <AdminInlineEmpty message="No software logs match this search or filter." /> : <div className="admin-table-wrap"><table className="admin-table admin-log-table"><thead><tr><th>Level</th><th>Source</th><th>Event</th><th>Reference</th><th>Timestamp</th></tr></thead><tbody>{logs.map((entry, index) => { const level = readString(entry, ["level", "severity"], "info"); return <tr key={readString(entry, ["id", "logId"], String(index))}><td><StatusBadge status={level} /></td><td><strong>{readString(entry, ["source", "category", "service"], "application")}</strong></td><td><p className="admin-log-message">{readString(entry, ["message", "event"], "No event message")}</p></td><td><span className="admin-mono">{readString(entry, ["requestId", "sessionId", "userId"], "—")}</span></td><td>{formatDate(firstValue(asRecord(entry), ["createdAt", "timestamp", "occurredAt"]))}</td></tr>; })}</tbody></table></div>}</section>;
 }
 
-function SettingsScreen({
-  overview,
-  supportConfig,
-  session,
+function billingSymbol(currency: BillingCurrency) {
+  return currency === "NGN" ? "₦" : "$";
+}
+
+function billingSignature(config: BillingConfig | null) {
+  if (!config) return "";
+  return JSON.stringify({ currency: config.currency, plans: config.plans });
+}
+
+function CreditPackagesScreen({
   billingConfig,
   billingDraft,
   setBillingDraft,
   billingSubmitting,
   billingError,
-  onSubmitBilling,
+  onSubmit,
+  onReset,
 }: {
-  overview: AdminOverview | null;
-  supportConfig: SupportConfig | null;
-  session: PlatformSession;
   billingConfig: BillingConfig | null;
   billingDraft: BillingConfig | null;
-  setBillingDraft: (config: BillingConfig | null) => void;
+  setBillingDraft: (config: BillingConfig) => void;
   billingSubmitting: boolean;
   billingError: string;
-  onSubmitBilling: (event: FormEvent) => void;
+  onSubmit: (event: FormEvent) => void;
+  onReset: () => void;
 }) {
-  const identity = sessionIdentity(session);
-  const role = readString(session, ["role"], readString(nestedRecord(session, ["user", "profile"]), ["role"], "admin"));
-  const updatePlan = (index: number, patch: Partial<BillingConfig["plans"][number]>) => {
-    if (!billingDraft) return;
+  if (!billingDraft) return <div className="admin-screen-stack"><section className="admin-card"><AdminInlineEmpty message="Billing configuration has not loaded." /></section></div>;
+
+  const currencySymbol = billingSymbol(billingDraft.currency);
+  const enabledCount = billingDraft.plans.filter((plan) => plan.enabled).length;
+  const dirty = billingSignature(billingConfig) !== billingSignature(billingDraft);
+  const updatePlans = (plans: BillingConfig["plans"]) => {
     setBillingDraft({
       ...billingDraft,
-      plans: billingDraft.plans.map((plan, planIndex) => planIndex === index ? { ...plan, ...patch } : plan),
+      plans: plans.map((plan, index) => ({ ...plan, currency: billingDraft.currency, sortOrder: index })),
     });
+  };
+  const updatePlan = (index: number, patch: Partial<BillingConfig["plans"][number]>) => {
+    updatePlans(billingDraft.plans.map((plan, planIndex) => planIndex === index ? { ...plan, ...patch } : plan));
+  };
+  const changeCurrency = (currency: BillingCurrency) => {
+    if (currency === billingDraft.currency) return;
+    const confirmed = window.confirm(
+      `Switch checkout currency from ${billingDraft.currency} to ${currency}? Existing numeric prices will keep the same values and will not be converted. Review every package price before publishing.`,
+    );
+    if (!confirmed) return;
+    setBillingDraft({
+      ...billingDraft,
+      currency,
+      plans: billingDraft.plans.map((plan) => ({ ...plan, currency })),
+    });
+  };
+  const addPackage = () => {
+    if (billingDraft.plans.length >= 20) return;
+    const usedIds = new Set(billingDraft.plans.map((plan) => plan.id));
+    const base = `package_${Date.now().toString(36)}`;
+    let id = base;
+    let suffix = 2;
+    while (usedIds.has(id)) id = `${base}_${suffix++}`;
+    updatePlans([
+      ...billingDraft.plans,
+      {
+        id,
+        label: "New credit package",
+        credits: 0,
+        amountMinor: 0,
+        amount: 0,
+        currency: billingDraft.currency,
+        enabled: true,
+        bestValue: false,
+        sortOrder: billingDraft.plans.length,
+      },
+    ]);
+  };
+  const removePackage = (index: number) => {
+    if (billingDraft.plans.length <= 1) return;
+    const remaining = billingDraft.plans.filter((_, planIndex) => planIndex !== index);
+    if (!remaining.some((plan) => plan.enabled)) remaining[0] = { ...remaining[0], enabled: true };
+    updatePlans(remaining);
+  };
+  const movePackage = (index: number, direction: -1 | 1) => {
+    const destination = index + direction;
+    if (destination < 0 || destination >= billingDraft.plans.length) return;
+    const plans = [...billingDraft.plans];
+    [plans[index], plans[destination]] = [plans[destination], plans[index]];
+    updatePlans(plans);
+  };
+  const setPackageEnabled = (index: number, enabled: boolean) => {
+    if (!enabled && enabledCount <= 1) return;
+    updatePlan(index, { enabled, bestValue: enabled ? billingDraft.plans[index].bestValue : false });
+  };
+  const setBestValue = (index: number, bestValue: boolean) => {
+    updatePlans(billingDraft.plans.map((plan, planIndex) => ({
+      ...plan,
+      bestValue: bestValue ? planIndex === index : planIndex === index ? false : plan.bestValue,
+    })));
   };
 
   return (
-    <div className="admin-settings-grid">
-      <section className="admin-card admin-settings-wide admin-billing-card">
-        <div className="admin-card-heading"><div><span>Flutterwave catalog</span><h3>Credit packages & currency</h3></div><WalletCards size={19} /></div>
-        {billingDraft ? (
-          <form className="admin-form-grid" onSubmit={onSubmitBilling}>
-            <label className="admin-field"><span>Checkout currency</span><select value={billingDraft.currency} onChange={(event) => setBillingDraft({ ...billingDraft, currency: event.target.value as BillingCurrency, plans: billingDraft.plans.map((plan) => ({ ...plan, currency: event.target.value as BillingCurrency })) })}><option value="NGN">NGN · Nigerian naira</option><option value="USD">USD · US dollar</option></select></label>
-            <label className="admin-field"><span>Usage charge</span><input value="2 credits per 10 seconds" disabled /></label>
-            <div className="admin-field admin-field-wide admin-package-editor">
-              <span>Packages shown to users</span>
-              {billingDraft.plans.map((plan, index) => (
-                <div className="admin-package-row" key={plan.id}>
-                  <label><span>Name</span><input value={plan.label} maxLength={100} onChange={(event) => updatePlan(index, { label: event.target.value })} /></label>
-                  <label><span>Credits</span><input type="number" min="1" step="1" value={plan.credits} onChange={(event) => updatePlan(index, { credits: Math.max(0, Math.trunc(Number(event.target.value))) })} /></label>
-                  <label><span>Price ({billingDraft.currency})</span><input type="number" min="0.01" step="0.01" value={plan.amountMinor / 100} onChange={(event) => updatePlan(index, { amountMinor: Math.max(0, Math.round(Number(event.target.value) * 100)), amount: Math.max(0, Number(event.target.value)) })} /></label>
-                  <label className="admin-package-check"><input type="checkbox" checked={plan.enabled} onChange={(event) => updatePlan(index, { enabled: event.target.checked })} /><span>Enabled</span></label>
-                  <label className="admin-package-check"><input type="checkbox" checked={plan.bestValue} onChange={(event) => updatePlan(index, { bestValue: event.target.checked })} /><span>Best value</span></label>
-                </div>
-              ))}
-            </div>
-            {billingError && <div className="admin-field-wide"><AdminFormError message={billingError} /></div>}
-            <button className="admin-button-primary admin-field-wide" type="submit" disabled={billingSubmitting}><CheckCircle2 size={16} /> {billingSubmitting ? "Saving packages..." : "Publish package prices"}</button>
-            <small className="admin-field-wide">Version {billingConfig?.version || billingDraft.version}. New prices apply only to new payments; existing payment records retain their original package snapshot.</small>
-          </form>
-        ) : <AdminInlineEmpty message="Billing configuration has not loaded." />}
+    <form className="admin-billing-workspace" onSubmit={onSubmit}>
+      <section className="admin-card admin-billing-card">
+        <div className="admin-card-heading"><div><span>Flutterwave checkout</span><h3>Currency and usage rate</h3></div><WalletCards size={19} /></div>
+        <div className="admin-billing-controls">
+          <fieldset className="admin-currency-picker" disabled={billingSubmitting}>
+            <legend>Currency shown to users</legend>
+            {(["NGN", "USD"] as BillingCurrency[]).map((currency) => (
+              <button className={billingDraft.currency === currency ? "admin-currency-option active" : "admin-currency-option"} type="button" aria-pressed={billingDraft.currency === currency} key={currency} onClick={() => changeCurrency(currency)}>
+                <strong>{billingSymbol(currency)}</strong><span><b>{currency}</b><small>{currency === "NGN" ? "Nigerian naira" : "US dollar"}</small></span>
+              </button>
+            ))}
+          </fieldset>
+          <div className="admin-usage-rate"><span><Coins size={18} /></span><div><small>Voice-conversion charge</small><strong>2 credits / 10 seconds</strong><p>This protected usage rate cannot be changed from the catalog.</p></div></div>
+        </div>
+        <div className="admin-currency-warning"><AlertCircle size={17} /><p>Changing currency changes the symbol only. Morphly does not convert package prices between dollars and naira, so review every amount before publishing.</p></div>
       </section>
 
+      <section className="admin-card admin-billing-catalog-card">
+        <div className="admin-card-heading admin-package-heading">
+          <div><span>User purchase catalog</span><h3>Credit packages</h3><p>{billingDraft.plans.length} of 20 packages · {enabledCount} visible to users</p></div>
+          <button className="admin-button-primary" type="button" disabled={billingSubmitting || billingDraft.plans.length >= 20} onClick={addPackage}><Plus size={16} /> Add package</button>
+        </div>
+
+        <div className="admin-package-editor">
+          {billingDraft.plans.map((plan, index) => (
+            <article className={plan.enabled ? "admin-package-row" : "admin-package-row is-disabled"} key={plan.id}>
+              <header className="admin-package-row-head">
+                <span className="admin-package-order">{index + 1}</span>
+                <div><strong>{plan.label.trim() || `Package ${index + 1}`}</strong><small>ID: {plan.id}</small></div>
+                <div className="admin-package-actions">
+                  <button type="button" aria-label={`Move ${plan.label} up`} title="Move up" disabled={billingSubmitting || index === 0} onClick={() => movePackage(index, -1)}><ArrowUp size={15} /></button>
+                  <button type="button" aria-label={`Move ${plan.label} down`} title="Move down" disabled={billingSubmitting || index === billingDraft.plans.length - 1} onClick={() => movePackage(index, 1)}><ArrowDown size={15} /></button>
+                  <button className="admin-package-remove" type="button" aria-label={`Remove ${plan.label}`} title="Remove package" disabled={billingSubmitting || billingDraft.plans.length <= 1} onClick={() => removePackage(index)}><Trash2 size={15} /></button>
+                </div>
+              </header>
+              <div className="admin-package-fields">
+                <label><span>Package name</span><input value={plan.label} maxLength={100} disabled={billingSubmitting} onChange={(event) => updatePlan(index, { label: event.target.value })} /></label>
+                <label><span>Credits</span><input type="number" min="1" max="100000000" step="1" value={plan.credits} disabled={billingSubmitting} onChange={(event) => updatePlan(index, { credits: Math.max(0, Math.trunc(Number(event.target.value))) })} /></label>
+                <label><span>Price in {billingDraft.currency}</span><div className="admin-package-price"><b>{currencySymbol}</b><input type="number" min="0.01" max="1000000000" step="0.01" value={plan.amountMinor / 100} disabled={billingSubmitting} onChange={(event) => { const amount = Math.max(0, Number(event.target.value)); updatePlan(index, { amountMinor: Math.round(amount * 100), amount }); }} /></div></label>
+              </div>
+              <div className="admin-package-options">
+                <label><input type="checkbox" checked={plan.enabled} disabled={billingSubmitting || (plan.enabled && enabledCount <= 1)} onChange={(event) => setPackageEnabled(index, event.target.checked)} /><span><strong>Available for purchase</strong><small>Show this package in the user credit window.</small></span></label>
+                <label><input type="checkbox" checked={plan.bestValue} disabled={billingSubmitting || !plan.enabled} onChange={(event) => setBestValue(index, event.target.checked)} /><span><strong>Best value badge</strong><small>Selecting this clears the badge from every other package.</small></span></label>
+              </div>
+            </article>
+          ))}
+        </div>
+
+        {billingError && <AdminFormError message={billingError} />}
+        <footer className="admin-billing-footer">
+          <div><strong>Catalog version {billingConfig?.version || billingDraft.version}</strong><span>New prices apply to new checkouts. Existing payments keep their original package snapshot.</span></div>
+          <div><button className="admin-button-secondary" type="button" disabled={billingSubmitting || !dirty} onClick={onReset}><RotateCcw size={15} /> Reset changes</button><button className="admin-button-primary" type="submit" disabled={billingSubmitting || !dirty}><CheckCircle2 size={16} /> {billingSubmitting ? "Publishing..." : "Publish packages"}</button></div>
+        </footer>
+      </section>
+    </form>
+  );
+}
+
+function SettingsScreen({ overview, supportConfig, session }: { overview: AdminOverview | null; supportConfig: SupportConfig | null; session: PlatformSession }) {
+  const identity = sessionIdentity(session);
+  const role = readString(session, ["role"], readString(nestedRecord(session, ["user", "profile"]), ["role"], "admin"));
+  return (
+    <div className="admin-settings-grid">
       <section className="admin-card"><div className="admin-card-heading"><div><span>Access control</span><h3>Administrator session</h3></div><ShieldCheck size={19} /></div><div className="admin-settings-list"><SettingsRow label="Signed in as" value={identity.email} status="verified" /><SettingsRow label="Role" value={role} status="protected" /><SettingsRow label="Authorization" value="Firebase ID token" status="server verified" /></div><p className="admin-privacy-note"><ShieldCheck size={16} /> Admin authorization is checked again by every Vercel serverless endpoint.</p></section>
       <section className="admin-card"><div className="admin-card-heading"><div><span>Connected services</span><h3>Integration status</h3></div><Activity size={19} /></div><div className="admin-settings-list"><SettingsRow label="Firebase Auth & Firestore" value={overview ? "Configured" : "Unavailable"} status={overview ? "connected" : "check API"} /><SettingsRow label="Flutterwave" value="Server keys required" status="check Vercel" /><SettingsRow label="Vercel serverless API" value={overview ? "Responding" : "No response"} status={overview ? "connected" : "check API"} /><SettingsRow label="Customer care" value={supportConfig ? "Published" : "Not configured"} status={supportConfig ? "active" : "attention"} /></div></section>
       <section className="admin-card admin-settings-wide"><div className="admin-card-heading"><div><span>Security posture</span><h3>Operational safeguards</h3></div></div><div className="admin-safeguard-grid"><div><ShieldCheck size={18} /><strong>Server-side role checks</strong><p>Privileged requests require a valid Firebase token and administrator role.</p></div><div><FileText size={18} /><strong>Audit every mutation</strong><p>Credit, suspension, support, billing, and notification changes retain actor and reason.</p></div><div><Database size={18} /><strong>Secrets stay server-side</strong><p>Firebase Admin and Flutterwave secret keys never enter this static client.</p></div></div></section>
