@@ -1,7 +1,7 @@
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
-import { authenticate, publicSessionUser } from "./auth";
-import { adminDb } from "./firebase-admin";
-import { collections, loadActiveNotifications, loadSupport, stableId } from "./data";
+import { authenticate, publicSessionUser } from "./auth.js";
+import { adminDb } from "./firebase-admin.js";
+import { collections, loadActiveNotifications, loadSupport, stableId } from "./data.js";
 import {
   HttpError,
   booleanField,
@@ -10,7 +10,7 @@ import {
   requireObject,
   stringField,
   type ApiRequest,
-} from "./http";
+} from "./http.js";
 
 export async function sessionBootstrap(request: ApiRequest): Promise<Record<string, unknown>> {
   const user = await authenticate(request);

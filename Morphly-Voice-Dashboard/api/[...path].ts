@@ -10,7 +10,7 @@ import {
   createNotification,
   updateSupport,
   updateUserSuspension,
-} from "./_lib/admin-handlers";
+} from "./_lib/admin-handlers.js";
 import {
   HttpError,
   applyCors,
@@ -20,14 +20,14 @@ import {
   sendSuccess,
   type ApiRequest,
   type ApiResponse,
-} from "./_lib/http";
-import { flutterwaveWebhook, initializePayment } from "./_lib/payment-handlers";
+} from "./_lib/http.js";
+import { flutterwaveWebhook, initializePayment } from "./_lib/payment-handlers.js";
 import {
   sessionBootstrap,
   telemetryEvent,
   telemetryHeartbeat,
   userSupport,
-} from "./_lib/user-handlers";
+} from "./_lib/user-handlers.js";
 
 export const config = {
   api: {

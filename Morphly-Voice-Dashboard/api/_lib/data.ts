@@ -5,7 +5,7 @@ import {
   type DocumentData,
   type QueryDocumentSnapshot,
 } from "firebase-admin/firestore";
-import { adminDb } from "./firebase-admin";
+import { adminDb } from "./firebase-admin.js";
 
 export const collections = {
   users: "users",

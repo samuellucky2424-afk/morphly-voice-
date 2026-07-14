@@ -1,8 +1,8 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
-import { authenticate } from "./auth";
-import { adminDb } from "./firebase-admin";
-import { collections, stableId } from "./data";
+import { authenticate } from "./auth.js";
+import { adminDb } from "./firebase-admin.js";
+import { collections, stableId } from "./data.js";
 import {
   HttpError,
   headerValue,
@@ -10,7 +10,7 @@ import {
   requireObject,
   stringField,
   type ApiRequest,
-} from "./http";
+} from "./http.js";
 
 type CreditPlan = {
   id: string;

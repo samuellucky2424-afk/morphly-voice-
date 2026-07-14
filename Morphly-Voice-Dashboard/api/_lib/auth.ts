@@ -1,7 +1,7 @@
 import type { DecodedIdToken } from "firebase-admin/auth";
 import { FieldValue, type DocumentData } from "firebase-admin/firestore";
-import { adminAuth, adminDb } from "./firebase-admin";
-import { HttpError, type ApiRequest, headerValue } from "./http";
+import { adminAuth, adminDb } from "./firebase-admin.js";
+import { HttpError, type ApiRequest, headerValue } from "./http.js";
 
 export type UserRole = "admin" | "user";
 export type UserStatus = "active" | "suspended";

@@ -1,6 +1,6 @@
 import { FieldValue, Timestamp, type Query } from "firebase-admin/firestore";
-import { adminAuth, adminDb } from "./firebase-admin";
-import { requireAdmin } from "./auth";
+import { adminAuth, adminDb } from "./firebase-admin.js";
+import { requireAdmin } from "./auth.js";
 import {
   adminUserJson,
   collections,
@@ -9,7 +9,7 @@ import {
   notificationJson,
   stableId,
   timestampFromOptionalIso,
-} from "./data";
+} from "./data.js";
 import {
   HttpError,
   booleanField,
@@ -21,7 +21,7 @@ import {
   requireObject,
   stringField,
   type ApiRequest,
-} from "./http";
+} from "./http.js";
 
 async function queryCount(query: Query): Promise<number> {
   const snapshot = await query.count().get();
