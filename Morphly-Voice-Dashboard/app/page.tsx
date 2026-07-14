@@ -271,6 +271,18 @@ function preferredDeviceIndex(info: EngineInfo, current: number, kind: "input" |
     if (directSound) return directSound.index;
   }
 
+  // RVC's callback is most reliable when both sides use the same WASAPI
+  // route and the device-native 48 kHz rate. This is only an automatic
+  // first-run fallback; a valid saved user selection still wins above.
+  if (info.mode === "rvc") {
+    const preferredName = kind === "input" ? "internal microphone" : "speakers";
+    const wasapi = devices.find(
+      (device) => device.hostAPI.toLowerCase().includes("wasapi")
+        && device.name.toLowerCase().includes(preferredName),
+    );
+    if (wasapi) return wasapi.index;
+  }
+
   if (devices.some((device) => device.index === current)) return current;
   return devices[0]?.index ?? -1;
 }
