@@ -20,6 +20,7 @@ import {
   getFirebaseIdToken,
   isFirebaseConfigured,
   observeFirebaseUser,
+  sendFirebasePasswordResetEmail,
   signInWithFirebaseEmail,
   signOutFirebase,
   type FirebaseUser,
@@ -200,6 +201,7 @@ function LoginPanel({ auth }: { auth: PlatformAuthContextValue }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState("");
+  const [formMessage, setFormMessage] = useState("");
   const firebaseIssue = getFirebaseConfigurationIssue();
   const cloudIssue = !isCloudApiConfigured()
     ? "VITE_MORPHLY_API_URL has not been configured for the Vercel API."
@@ -209,6 +211,7 @@ function LoginPanel({ auth }: { auth: PlatformAuthContextValue }) {
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setFormError("");
+    setFormMessage("");
     if (!cloudLoginAvailable) return;
     if (password.length < 8) {
       setFormError("Password must contain at least 8 characters.");
@@ -222,6 +225,25 @@ function LoginPanel({ auth }: { auth: PlatformAuthContextValue }) {
     try {
       if (mode === "create-account") await auth.createAccount(email, password, displayName);
       else await auth.signIn(email, password);
+    } catch (nextError) {
+      setFormError(readableError(nextError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetPassword = async () => {
+    setFormError("");
+    setFormMessage("");
+    if (!cloudLoginAvailable) return;
+    if (!email.trim()) {
+      setFormError("Enter your email address first, then select Forgot password.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await sendFirebasePasswordResetEmail(email);
+      setFormMessage("Password reset email sent. Check your inbox and spam folder.");
     } catch (nextError) {
       setFormError(readableError(nextError));
     } finally {
@@ -248,8 +270,10 @@ function LoginPanel({ auth }: { auth: PlatformAuthContextValue }) {
           {mode === "create-account" && <AuthField label="Display name" value={displayName} onChange={setDisplayName} autoComplete="name" required />}
           <AuthField label="Email" value={email} onChange={setEmail} type="email" autoComplete="email" required />
           <AuthField label="Password" value={password} onChange={setPassword} type="password" autoComplete={mode === "sign-in" ? "current-password" : "new-password"} required />
+          {mode === "sign-in" && <button type="button" style={authStyles.textButton} disabled={busy || !cloudLoginAvailable} onClick={() => void resetPassword()}>Forgot password?</button>}
           {mode === "create-account" && <AuthField label="Confirm password" value={confirmPassword} onChange={setConfirmPassword} type="password" autoComplete="new-password" required />}
           {(formError || auth.error) && <p style={authStyles.error} role="alert">{formError || auth.error}</p>}
+          {formMessage && <p style={authStyles.success} role="status">{formMessage}</p>}
           {!cloudLoginAvailable && <p style={authStyles.configuration}><strong>Cloud sign-in is not ready.</strong><br />{firebaseIssue || cloudIssue}</p>}
           <button type="submit" style={authStyles.primaryButton} disabled={busy || !cloudLoginAvailable}>{busy ? "Please wait..." : mode === "sign-in" ? "Enter studio" : "Create account"}</button>
         </form>
@@ -288,6 +312,8 @@ const authStyles: Record<string, CSSProperties> = {
   label: { color: "#56565e", display: "flex", flexDirection: "column", fontSize: 11, fontWeight: 650, gap: 7 },
   input: { background: "#fafafa", border: "1px solid #dddde3", borderRadius: 10, color: "#25252a", fontSize: 13, height: 44, outlineColor: "#e20d2f", padding: "0 12px", width: "100%" },
   error: { background: "#fff0f2", border: "1px solid #ffc8d1", borderRadius: 9, color: "#a80722", fontSize: 11, lineHeight: 1.45, margin: 0, padding: "10px 12px" },
+  success: { background: "#eefbf3", border: "1px solid #bce7ca", borderRadius: 9, color: "#176534", fontSize: 11, lineHeight: 1.45, margin: 0, padding: "10px 12px" },
   configuration: { background: "#fff8eb", border: "1px solid #efd9ad", borderRadius: 9, color: "#76592b", fontSize: 10.5, lineHeight: 1.5, margin: 0, padding: "10px 12px" },
+  textButton: { alignSelf: "flex-end", background: "transparent", border: 0, color: "#c20b29", cursor: "pointer", fontSize: 11, fontWeight: 680, marginTop: -7, padding: "0 1px" },
   primaryButton: { background: "#e20d2f", border: "1px solid #e20d2f", borderRadius: 10, boxShadow: "0 9px 22px rgba(226,13,47,.18)", color: "#fff", fontSize: 12, fontWeight: 720, minHeight: 44, padding: "0 16px", width: "100%" },
 };

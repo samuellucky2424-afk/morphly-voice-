@@ -75,11 +75,22 @@ export async function adminOverview(request: ApiRequest): Promise<Record<string,
     queryCount(payments.where("createdAt", ">=", today)),
     queryCount(database.collection(collections.sessions).where("startedAt", ">=", today)),
     queryCount(database.collection(collections.logs).where("createdAt", ">=", today)),
-    queryCount(database.collection(collections.logs).where("severity", "in", ["error", "critical"]).where("createdAt", ">=", today)),
+    queryCount(
+      database
+        .collection(collections.logs)
+        .where("severity", "in", ["error", "critical"])
+        .where("createdAt", ">=", today)
+        .orderBy("createdAt", "desc"),
+    ),
     users.limit(1000).get(),
     presence.where("lastSeenAt", ">=", liveSince).limit(500).get(),
     users.where("createdAt", ">=", chartStart).limit(2000).get(),
-    payments.where("status", "==", "successful").where("createdAt", ">=", chartStart).limit(2000).get(),
+    payments
+      .where("status", "==", "successful")
+      .where("createdAt", ">=", chartStart)
+      .orderBy("createdAt", "desc")
+      .limit(2000)
+      .get(),
     database.collection(collections.sessions).where("startedAt", ">=", chartStart).limit(2000).get(),
   ]);
 
