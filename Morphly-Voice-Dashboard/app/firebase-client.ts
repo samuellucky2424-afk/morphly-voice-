@@ -4,6 +4,7 @@ import {
   createUserWithEmailAndPassword,
   getAuth,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   setPersistence,
   signInWithEmailAndPassword,
   signOut,
@@ -83,6 +84,11 @@ export async function signInWithFirebaseEmail(email: string, password: string) {
   return credential.user;
 }
 
+export async function sendFirebasePasswordResetEmail(email: string) {
+  const auth = await prepareFirebaseAuth();
+  await sendPasswordResetEmail(auth, email.trim());
+}
+
 export async function createFirebaseEmailAccount(email: string, password: string, displayName: string) {
   const auth = await prepareFirebaseAuth();
   const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
@@ -115,4 +121,3 @@ export function firebaseAuthErrorMessage(error: unknown) {
 }
 
 export type { User as FirebaseUser } from "firebase/auth";
-
