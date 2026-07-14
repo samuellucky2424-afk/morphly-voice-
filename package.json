@@ -1,0 +1,24 @@
+{
+  "name": "morphly-voice",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Morphly Voice desktop dashboard with RVC and Beatrice V2 engine support.",
+  "scripts": {
+    "dashboard:install": "npm ci --prefix Morphly-Voice-Dashboard",
+    "dashboard:build": "npm run build:static --prefix Morphly-Voice-Dashboard",
+    "dashboard:typecheck": "npm run typecheck:static --prefix Morphly-Voice-Dashboard && npm run typecheck:api --prefix Morphly-Voice-Dashboard",
+    "admin:grant": "node --env-file-if-exists=Morphly-Voice-Dashboard/.env.local Morphly-Voice-Dashboard/scripts/set-admin-role.mjs",
+    "build:docker": "date +%Y%m%d%H%M%S > docker/dummy && DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile docker/ -t voice-changer",
+    "build:docker:onnx": "DOCKER_BUILDKIT=1 docker build -f docker_onnx/Dockerfile docker/ -t onnx-converter",
+    "build:docker:trainer": "date +%Y%m%d%H%M%S > docker_trainer/dummy && DOCKER_BUILDKIT=1 docker build -f docker_trainer/Dockerfile docker_trainer/ -t trainer",
+    "build:docker:vcclient": "date +%Y%m%d%H%M%S > docker_vcclient/dummy && DOCKER_BUILDKIT=1 docker build -f docker_vcclient/Dockerfile docker_vcclient/ -t vcclient",
+    "push:docker": "bash script/001_pushDocker.sh",
+    "push:docker:trainer": "bash script/002_pushDockerTrainer.sh",
+    "push:docker:vcclient": "bash script/003_pushDockerVCClient.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/samuellucky2424-afk/morphly-voice-.git"
+  },
+  "license": "ISC"
+}
