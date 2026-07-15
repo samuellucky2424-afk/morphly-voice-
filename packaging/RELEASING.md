@@ -54,6 +54,12 @@ The build must produce the exact `.exe` and `.exe.sha256` names under
 `packaging/output`. Code-sign and timestamp the installer before distribution;
 if signing changes the executable, regenerate its SHA-256 sidecar afterward.
 
+The installer treats RVC settings, Beatrice audio settings, and Beatrice slot 1
+parameters as user-owned mutable data. Their neutral defaults are installed
+only when the files do not already exist, so an in-place update does not reset
+the user's selected devices, voice, pitch, or formant controls. Temporary
+engine uploads and logs are not packaged.
+
 ## Validate without contacting GitHub
 
 Run the focused publisher checks:

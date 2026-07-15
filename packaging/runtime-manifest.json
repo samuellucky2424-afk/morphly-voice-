@@ -29,6 +29,16 @@
       "purpose": "Engine mode launcher"
     },
     {
+      "path": "packaging/default-beatrice-settings.json",
+      "kind": "file",
+      "purpose": "Neutral first-install Beatrice audio configuration"
+    },
+    {
+      "path": "packaging/default-beatrice-slot-1-params.json",
+      "kind": "file",
+      "purpose": "Neutral first-install Beatrice model-slot configuration"
+    },
+    {
       "path": ".venv/Scripts/python.exe",
       "kind": "file",
       "purpose": "Source Python environment used to assemble the portable runtime"

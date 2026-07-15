@@ -153,7 +153,7 @@ Invoke-MorphlyRobocopy `
     -Source (Join-Path $repositoryRoot "server") `
     -Destination (Join-Path $stageRoot "server") `
     -ExcludedDirectories @("__pycache__", "logs", "upload_dir", "tmp_dir") `
-    -ExcludedFiles @("*.pyc", "vcclient.log", "stored_setting.json")
+    -ExcludedFiles @("*.pyc", "vcclient.log", "stored_setting.json", "rinna_hubert_base_jp.pt")
 Invoke-MorphlyRobocopy `
     -Source (Join-Path $repositoryRoot "client\demo\dist") `
     -Destination (Join-Path $stageRoot "client\demo\dist")
@@ -163,7 +163,7 @@ Invoke-MorphlyRobocopy `
 Invoke-MorphlyRobocopy `
     -Source (Join-Path $repositoryRoot "engines\beatrice-v2") `
     -Destination (Join-Path $stageRoot "engines\beatrice-v2") `
-    -ExcludedDirectories @("__pycache__") `
+    -ExcludedDirectories @("__pycache__", "logs", "settings", "upload_dir", "tmp_dir") `
     -ExcludedFiles @("*.pyc", "vcclient*.log")
 
 $portablePython = Join-Path $stageRoot "runtime\python"
@@ -194,12 +194,18 @@ foreach ($pattern in @("python.exe", "pythonw.exe", "python3.dll", "python*.dll"
 }
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "default-rvc-settings.json") -Destination (Join-Path $stageRoot "server\stored_setting.json")
+New-Item -ItemType Directory -Path (Join-Path $stageRoot "engines\beatrice-v2\settings") -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "default-beatrice-settings.json") -Destination (Join-Path $stageRoot "engines\beatrice-v2\settings\vc_conf.json")
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "default-beatrice-slot-1-params.json") -Destination (Join-Path $stageRoot "engines\beatrice-v2\model_dir\1\params.json") -Force
 foreach ($directory in @(
     "runtime-logs",
     "runtime-state",
     "server\logs",
     "server\upload_dir",
-    "server\tmp_dir"
+    "server\tmp_dir",
+    "engines\beatrice-v2\logs",
+    "engines\beatrice-v2\upload_dir",
+    "engines\beatrice-v2\tmp_dir"
 )) {
     New-Item -ItemType Directory -Path (Join-Path $stageRoot $directory) -Force | Out-Null
 }
@@ -252,7 +258,9 @@ $checksumLines = New-Object System.Collections.Generic.List[string]
 Get-ChildItem -LiteralPath $stageRoot -Recurse -File -Force |
     Where-Object {
         $_.Name -ne "checksums.sha256" -and
-        $_.FullName -ne (Join-Path $stageRoot "server\stored_setting.json")
+        $_.FullName -ne (Join-Path $stageRoot "server\stored_setting.json") -and
+        $_.FullName -ne (Join-Path $stageRoot "engines\beatrice-v2\settings\vc_conf.json") -and
+        $_.FullName -ne (Join-Path $stageRoot "engines\beatrice-v2\model_dir\1\params.json")
     } |
     Sort-Object FullName |
     ForEach-Object {

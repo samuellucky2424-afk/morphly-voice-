@@ -116,7 +116,7 @@ function Get-MorphlyPayloadEstimate {
         @{ Name = "RVC server, models, and pretrain"; Path = (Join-Path $script:RepositoryRoot "server"); Exclude = @("__pycache__", "logs", "upload_dir", "tmp_dir") },
         @{ Name = "RVC fallback frontend"; Path = (Join-Path $script:RepositoryRoot "client\demo\dist"); Exclude = @() },
         @{ Name = "Morphly dashboard"; Path = (Join-Path $script:RepositoryRoot "Morphly-Voice-Dashboard\dist-static"); Exclude = @() },
-        @{ Name = "Beatrice V2 runtime and models"; Path = (Join-Path $script:RepositoryRoot "engines\beatrice-v2"); Exclude = @("__pycache__") },
+        @{ Name = "Beatrice V2 runtime and models"; Path = (Join-Path $script:RepositoryRoot "engines\beatrice-v2"); Exclude = @("__pycache__", "logs", "settings", "upload_dir", "tmp_dir") },
         @{ Name = "Portable Python standard library"; Path = $PythonRuntime.stdlib; Exclude = @("site-packages", "__pycache__", "test", "tests") },
         @{ Name = "RVC Python packages"; Path = $PythonRuntime.sitePackages; Exclude = @("__pycache__") },
         @{ Name = "Portable Python DLLs"; Path = (Join-Path $PythonRuntime.basePrefix "DLLs"); Exclude = @("__pycache__") }

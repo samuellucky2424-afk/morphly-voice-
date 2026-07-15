@@ -47,8 +47,10 @@ VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#AppVersion}
 
 [Files]
-Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: "server\stored_setting.json"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: "server\stored_setting.json,engines\beatrice-v2\settings\vc_conf.json,engines\beatrice-v2\model_dir\1\params.json"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\server\stored_setting.json"; DestDir: "{app}\server"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
+Source: "{#StageDir}\engines\beatrice-v2\settings\vc_conf.json"; DestDir: "{app}\engines\beatrice-v2\settings"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
+Source: "{#StageDir}\engines\beatrice-v2\model_dir\1\params.json"; DestDir: "{app}\engines\beatrice-v2\model_dir\1"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
 
 [Dirs]
 Name: "{app}\runtime-logs"
@@ -56,6 +58,10 @@ Name: "{app}\runtime-state"
 Name: "{app}\server\logs"
 Name: "{app}\server\upload_dir"
 Name: "{app}\server\tmp_dir"
+Name: "{app}\engines\beatrice-v2\settings"
+Name: "{app}\engines\beatrice-v2\logs"
+Name: "{app}\engines\beatrice-v2\upload_dir"
+Name: "{app}\engines\beatrice-v2\tmp_dir"
 
 [Icons]
 Name: "{autoprograms}\Morphly Voice"; Filename: "{app}\start_http.bat"; WorkingDir: "{app}"; IconFilename: "{app}\MorphlyVoice.ico"
