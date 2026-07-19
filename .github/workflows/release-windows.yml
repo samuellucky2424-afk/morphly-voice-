@@ -85,6 +85,10 @@ jobs:
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { throw "Root npm install failed." }
+          node node_modules/electron/install.js
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath "node_modules\electron\dist\electron.exe" -PathType Leaf)) {
+            throw "Electron runtime download failed."
+          }
           npm ci --prefix Morphly-Voice-Dashboard
           if ($LASTEXITCODE -ne 0) { throw "Dashboard npm install failed." }
 
@@ -162,6 +166,7 @@ jobs:
 
           Copy-Tree (Join-Path $bootstrapRoot "runtime\python") (Join-Path $env:GITHUB_WORKSPACE "runtime\python")
           Copy-Tree (Join-Path $bootstrapRoot "engines\beatrice-v2") (Join-Path $env:GITHUB_WORKSPACE "engines\beatrice-v2")
+          New-Item -ItemType Directory -Path "server\model_dir" -Force | Out-Null
           New-Item -ItemType Directory -Path "server\pretrain" -Force | Out-Null
           Copy-Item -LiteralPath (Join-Path $bootstrapRoot "server\pretrain\content_vec_500.onnx") -Destination "server\pretrain\content_vec_500.onnx" -Force
 
