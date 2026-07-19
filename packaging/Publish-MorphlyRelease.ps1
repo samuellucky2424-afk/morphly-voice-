@@ -43,12 +43,20 @@ function Get-MorphlyLockVersions {
         throw "Required version file is missing: $Path"
     }
     try {
-        # Windows PowerShell 5.1 ConvertFrom-Json rejects npm's required empty
-        # string key in packages[""]. JavaScriptSerializer preserves that key.
-        Add-Type -AssemblyName System.Web.Extensions
-        $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-        $serializer.MaxJsonLength = [int]::MaxValue
-        $lockJson = $serializer.DeserializeObject((Get-Content -LiteralPath $Path -Raw -Encoding UTF8))
+        $lockText = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+        $convertFromJson = Get-Command ConvertFrom-Json
+        if ($convertFromJson.Parameters.ContainsKey("AsHashtable")) {
+            # PowerShell 7 can preserve npm's required packages[""] key in a
+            # hashtable without loading the legacy full-framework System.Web.
+            $lockJson = $lockText | ConvertFrom-Json -AsHashtable
+        } else {
+            # Windows PowerShell 5.1 cannot represent an empty JSON key as a
+            # PSCustomObject. JavaScriptSerializer preserves it locally.
+            Add-Type -AssemblyName System.Web.Extensions
+            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            $serializer.MaxJsonLength = [int]::MaxValue
+            $lockJson = $serializer.DeserializeObject($lockText)
+        }
         $topLevelVersion = [string]$lockJson["version"]
         $rootPackageVersion = [string]$lockJson["packages"][""]["version"]
     } catch {
