@@ -351,10 +351,15 @@ jobs:
 
           $release = Find-ReleaseByTag $tag
           if (-not $release) {
-            gh release create $tag --repo $env:GITHUB_REPOSITORY --verify-tag --title "Morphly Voice $env:RELEASE_VERSION" --generate-notes --draft
-            if ($LASTEXITCODE -ne 0) { throw "Could not create draft release $tag." }
-            $release = Find-ReleaseByTag $tag
-            if (-not $release) { throw "Draft release $tag was created but could not be found by release ID." }
+            $release = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases" `
+              -f "tag_name=$tag" `
+              -f "name=Morphly Voice $env:RELEASE_VERSION" `
+              -F draft=true `
+              -F prerelease=false `
+              -F generate_release_notes=true | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or -not $release.id -or [string]$release.tag_name -cne $tag -or -not $release.draft) {
+              throw "Could not create and identify draft release $tag."
+            }
           }
 
           function Confirm-RemoteAsset {
