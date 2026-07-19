@@ -475,7 +475,7 @@ class EngineSupervisor:
         mode: str,
         *,
         force: bool = False,
-        allow_rollback: bool = True,
+        allow_rollback: bool = False,
     ) -> dict[str, object]:
         normalized_mode = mode.strip().lower()
         if normalized_mode not in VALID_MODES:
@@ -483,6 +483,20 @@ class EngineSupervisor:
                 f"Unsupported engine mode: {mode}",
                 self.status(),
             )
+
+        # Status polling and React development lifecycles can submit the same
+        # selection more than once. Do not queue an identical request behind a
+        # cold start: if the first attempt times out, the queued call would
+        # otherwise kill it and restart the expensive imports from zero.
+        with self._state_lock:
+            if (
+                not force
+                and self._requested_mode == normalized_mode
+                and self._phase in {"starting", "rolling-back"}
+                and self._process is not None
+                and self._process.poll() is None
+            ):
+                return self.status()
 
         with self._switch_lock:
             with self._state_lock:
@@ -562,18 +576,36 @@ class EngineSupervisor:
             f"\r\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting {mode}\r\n".encode("utf-8")
         )
 
-        command_processor = os.environ.get("COMSPEC", "cmd.exe")
-        command = [
-            command_processor,
-            "/d",
-            "/s",
-            "/c",
-            "call",
-            str(self.config.launcher),
-            mode,
-            str(self.config.engine_port),
-            self.config.engine_host,
-        ]
+        if mode == "rvc":
+            command = [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "MMVCServerSIO:app_socketio",
+                "--host",
+                self.config.engine_host,
+                "--port",
+                str(self.config.engine_port),
+                "--log-level",
+                "error",
+                "--no-access-log",
+            ]
+            engine_cwd = REPO_ROOT / "server"
+        else:
+            beatrice_executable = REPO_ROOT / "engines" / "beatrice-v2" / "main.exe"
+            if not beatrice_executable.is_file():
+                raise FileNotFoundError(f"Beatrice runtime is missing: {beatrice_executable}")
+            command = [
+                str(beatrice_executable),
+                "start",
+                "--host",
+                self.config.engine_host,
+                "-p",
+                str(self.config.engine_port),
+                "--https=False",
+                "--launch_client=False",
+            ]
+            engine_cwd = beatrice_executable.parent
         environment = os.environ.copy()
         environment.update(
             {
@@ -587,7 +619,7 @@ class EngineSupervisor:
         )
 
         popen_options: dict[str, object] = {
-            "cwd": str(REPO_ROOT),
+            "cwd": str(engine_cwd),
             "env": environment,
             "stdin": subprocess.DEVNULL,
             "stdout": log_handle,
@@ -679,7 +711,7 @@ class EngineSupervisor:
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         check=False,
-                        timeout=20,
+                        timeout=6,
                     )
                     if taskkill_result.returncode != 0:
                         with contextlib.suppress(OSError):
@@ -692,19 +724,19 @@ class EngineSupervisor:
                     os.killpg(process.pid, signal.SIGTERM)
 
             try:
-                process.wait(timeout=10)
+                process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 with contextlib.suppress(OSError):
                     process.kill()
                 with contextlib.suppress(subprocess.TimeoutExpired):
-                    process.wait(timeout=5)
+                    process.wait(timeout=2)
 
         if log_handle is not None:
             with contextlib.suppress(OSError):
                 log_handle.close()
 
         if process is not None:
-            self._wait_for_engine_port_to_close(timeout=10)
+            self._wait_for_engine_port_to_close(timeout=3)
 
     def _engine_port_is_open(self) -> bool:
         try:
@@ -967,6 +999,8 @@ class MorphlyGatewayHandler(BaseHTTPRequestHandler):
             return
 
         try:
+            # Do not make the user wait through a second cold start when the
+            # requested engine fails. A retry is explicit and predictable.
             status = self.supervisor.switch_mode(mode)
         except EngineSwitchError as exc:
             self._send_json(503, {"ok": False, "error": str(exc), **exc.status})
@@ -1281,7 +1315,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--startup-timeout",
         type=float,
-        default=float(os.environ.get("MORPHLY_ENGINE_STARTUP_TIMEOUT", "210")),
+        default=float(os.environ.get("MORPHLY_ENGINE_STARTUP_TIMEOUT", "50")),
     )
     parser.add_argument(
         "--default-mode",

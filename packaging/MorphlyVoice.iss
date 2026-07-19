@@ -64,14 +64,14 @@ Name: "{app}\engines\beatrice-v2\upload_dir"
 Name: "{app}\engines\beatrice-v2\tmp_dir"
 
 [Icons]
-Name: "{autoprograms}\Morphly Voice"; Filename: "{app}\start_http.bat"; WorkingDir: "{app}"; IconFilename: "{app}\MorphlyVoice.ico"
-Name: "{autodesktop}\Morphly Voice"; Filename: "{app}\start_http.bat"; WorkingDir: "{app}"; IconFilename: "{app}\MorphlyVoice.ico"; Tasks: desktopicon
+Name: "{autoprograms}\Morphly Voice"; Filename: "{app}\electron-runtime\Morphly Voice.exe"; WorkingDir: "{app}"; IconFilename: "{app}\MorphlyVoice.ico"; AppUserModelID: "com.morphly.voice"
+Name: "{autodesktop}\Morphly Voice"; Filename: "{app}\electron-runtime\Morphly Voice.exe"; WorkingDir: "{app}"; IconFilename: "{app}\MorphlyVoice.ico"; AppUserModelID: "com.morphly.voice"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
 
 [Run]
-Filename: "{app}\start_http.bat"; WorkingDir: "{app}"; Description: "Start Morphly Voice"; Flags: postinstall nowait skipifsilent shellexec
+Filename: "{app}\electron-runtime\Morphly Voice.exe"; WorkingDir: "{app}"; Description: "Start Morphly Voice"; Flags: postinstall nowait skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\runtime-logs"

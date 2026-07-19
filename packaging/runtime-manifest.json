@@ -19,9 +19,29 @@
       "purpose": "Detached Windows installer handoff helper"
     },
     {
+      "path": "launch_morphly.vbs",
+      "kind": "file",
+      "purpose": "Compatibility launcher for the Electron desktop application"
+    },
+    {
+      "path": "electron-shell/main.cjs",
+      "kind": "file",
+      "purpose": "Morphly Voice Electron desktop window"
+    },
+    {
+      "path": "electron-shell/loading.html",
+      "kind": "file",
+      "purpose": "Desktop startup and error screen"
+    },
+    {
+      "path": "node_modules/electron/dist/electron.exe",
+      "kind": "file",
+      "purpose": "Electron desktop runtime"
+    },
+    {
       "path": "start_http.bat",
       "kind": "file",
-      "purpose": "Application launcher"
+      "purpose": "Background application server launcher"
     },
     {
       "path": "start_engine_mode.bat",
@@ -79,12 +99,7 @@
     {
       "path": "server/model_dir",
       "kind": "directory",
-      "patterns": [
-        "*.onnx",
-        "*.pth"
-      ],
-      "minimumMatches": 1,
-      "purpose": "At least one distributable RVC voice model"
+      "purpose": "Writable RVC voice-model directory; users install their own models"
     },
     {
       "path": "server/pretrain",
@@ -105,6 +120,11 @@
       "kind": "directory",
       "minimumFiles": 100,
       "purpose": "Complete Beatrice executable runtime"
+    },
+    {
+      "path": "engines/beatrice-v2/_internal/base_library.zip",
+      "kind": "file",
+      "purpose": "Beatrice embedded Python standard library"
     },
     {
       "path": "engines/beatrice-v2/web_front",

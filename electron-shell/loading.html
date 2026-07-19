@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Morphly Voice</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #ffffff; color: #111827; }
+      main { width: min(520px, calc(100vw - 48px)); text-align: center; }
+      .logo { width: 112px; height: 112px; display: block; object-fit: contain; margin: 0 auto 20px; }
+      h1 { margin: 0 0 10px; font-size: 28px; }
+      p { margin: 0; color: #667085; line-height: 1.55; }
+      .spinner { width: 34px; height: 34px; margin: 28px auto 0; border: 3px solid #e4e7ec; border-top-color: #6c63ff; border-radius: 50%; animation: spin .8s linear infinite; }
+      .error .spinner { display: none; }
+      .error p { color: #ff9d9d; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <main id="status">
+      <img class="logo" src="../Morphly-Voice-Dashboard/public/morphly-logo.png" alt="Morphly Voice logo">
+      <h1>Morphly Voice</h1>
+      <p id="message">Starting your voice workspace…</p>
+      <div class="spinner" aria-label="Loading"></div>
+    </main>
+  </body>
+</html>

@@ -11,6 +11,11 @@ if (-not $ApplicationRoot) {
 }
 $root = (Resolve-Path -LiteralPath $ApplicationRoot).Path
 $rootPrefix = $root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+$beatriceBaseLibraryPath = Join-Path $root "engines\beatrice-v2\_internal\base_library.zip"
+if (-not (Test-Path -LiteralPath $beatriceBaseLibraryPath -PathType Leaf)) {
+    throw "Beatrice embedded Python standard library is missing: $beatriceBaseLibraryPath"
+}
+
 $checksumPath = Join-Path $root "checksums.sha256"
 if (-not (Test-Path -LiteralPath $checksumPath -PathType Leaf)) {
     throw "Checksum manifest is missing: $checksumPath"

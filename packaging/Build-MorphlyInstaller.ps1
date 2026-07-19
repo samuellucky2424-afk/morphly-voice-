@@ -104,6 +104,8 @@ $copySources = @(
     (Join-Path $repositoryRoot "server"),
     (Join-Path $repositoryRoot "client\demo\dist"),
     (Join-Path $repositoryRoot "Morphly-Voice-Dashboard\dist-static"),
+    (Join-Path $repositoryRoot "electron-shell"),
+    (Join-Path $repositoryRoot "node_modules\electron\dist"),
     (Join-Path $repositoryRoot "engines\beatrice-v2"),
     $preflight.PythonRuntime.stdlib,
     $preflight.PythonRuntime.sitePackages,
@@ -133,6 +135,7 @@ foreach ($file in @(
     "morphly_supervisor.py",
     "morphly_updater.py",
     "morphly_update_helper.ps1",
+    "launch_morphly.vbs",
     "start_http.bat",
     "start_engine_mode.bat",
     "LICENSE",
@@ -152,19 +155,57 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "runtime-manifest.json") -Destin
 Invoke-MorphlyRobocopy `
     -Source (Join-Path $repositoryRoot "server") `
     -Destination (Join-Path $stageRoot "server") `
-    -ExcludedDirectories @("__pycache__", "logs", "upload_dir", "tmp_dir") `
+    -ExcludedDirectories @("__pycache__", "logs", "model_dir", "pretrain", "upload_dir", "tmp_dir") `
     -ExcludedFiles @("*.pyc", "vcclient.log", "stored_setting.json", "rinna_hubert_base_jp.pt")
+New-Item -ItemType Directory -Path (Join-Path $stageRoot "server\model_dir") -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $stageRoot "server\pretrain") -Force | Out-Null
+foreach ($pretrainFile in @("content_vec_500.onnx")) {
+    Copy-Item `
+        -LiteralPath (Join-Path $repositoryRoot "server\pretrain\$pretrainFile") `
+        -Destination (Join-Path $stageRoot "server\pretrain\$pretrainFile")
+}
 Invoke-MorphlyRobocopy `
     -Source (Join-Path $repositoryRoot "client\demo\dist") `
     -Destination (Join-Path $stageRoot "client\demo\dist")
 Invoke-MorphlyRobocopy `
     -Source (Join-Path $repositoryRoot "Morphly-Voice-Dashboard\dist-static") `
     -Destination (Join-Path $stageRoot "Morphly-Voice-Dashboard\dist-static")
+$electronPackageRoot = Join-Path $resolvedWorkRoot "electron-package-$Version"
+if (Test-Path -LiteralPath $electronPackageRoot) {
+    throw "Electron package directory already exists: $electronPackageRoot"
+}
+$electronPackager = Join-Path $repositoryRoot "node_modules\@electron\packager\bin\electron-packager.mjs"
+& node.exe $electronPackager `
+    (Join-Path $repositoryRoot "electron-shell") `
+    "Morphly Voice" `
+    "--platform=win32" `
+    "--arch=x64" `
+    "--electron-version=43.1.1" `
+    "--icon=$(Join-Path $stageRoot 'MorphlyVoice.ico')" `
+    "--out=$electronPackageRoot" `
+    "--asar"
+if ($LASTEXITCODE -ne 0) {
+    throw "Electron desktop packaging failed with exit code $LASTEXITCODE."
+}
+Move-Item `
+    -LiteralPath (Join-Path $electronPackageRoot "Morphly Voice-win32-x64") `
+    -Destination (Join-Path $stageRoot "electron-runtime")
+$beatriceSource = Join-Path $repositoryRoot "engines\beatrice-v2"
 Invoke-MorphlyRobocopy `
-    -Source (Join-Path $repositoryRoot "engines\beatrice-v2") `
+    -Source $beatriceSource `
     -Destination (Join-Path $stageRoot "engines\beatrice-v2") `
-    -ExcludedDirectories @("__pycache__", "logs", "settings", "upload_dir", "tmp_dir") `
-    -ExcludedFiles @("*.pyc", "vcclient*.log")
+    -ExcludedDirectories @("__pycache__", "logs", "settings", "upload_dir", "tmp_dir", "model_dir") `
+    -ExcludedFiles @("*.pyc", "vcclient*.log", "vcclient-native-client-lin-*", "voice-changer-native-client")
+Invoke-MorphlyRobocopy `
+    -Source (Join-Path $beatriceSource "model_dir") `
+    -Destination (Join-Path $stageRoot "engines\beatrice-v2\model_dir") `
+    -ExcludedDirectories @("__pycache__") `
+    -ExcludedFiles @("*.pyc", "*.zip")
+
+$stagedBeatriceBaseLibrary = Join-Path $stageRoot "engines\beatrice-v2\_internal\base_library.zip"
+if (-not (Test-Path -LiteralPath $stagedBeatriceBaseLibrary -PathType Leaf)) {
+    throw "Staged Beatrice runtime is incomplete: $stagedBeatriceBaseLibrary"
+}
 
 $portablePython = Join-Path $stageRoot "runtime\python"
 New-Item -ItemType Directory -Path $portablePython -Force | Out-Null

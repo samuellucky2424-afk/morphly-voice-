@@ -78,9 +78,9 @@ export class EngineApiError extends Error {
 
 const REQUEST_TIMEOUT = 12_000;
 const RVC_SETTINGS_TIMEOUT = 60_000;
-const RVC_MODEL_TIMEOUT = 360_000;
+const RVC_MODEL_TIMEOUT = 120_000;
 const RVC_UPLOAD_TIMEOUT = 120_000;
-const RVC_UPLOAD_CHUNK_BYTES = 1024 * 1024;
+const RVC_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
 const RVC_UPLOAD_MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
 let engineAuthorizationToken = "";
 
@@ -379,7 +379,7 @@ export async function getGatewayStatus() {
 }
 
 export async function switchGatewayMode(mode: EngineMode) {
-  return requestJson<GatewayStatus>("/api/morphly/engine-mode", jsonRequest("POST", { mode }), 240_000);
+  return requestJson<GatewayStatus>("/api/morphly/engine-mode", jsonRequest("POST", { mode }), 65_000);
 }
 
 async function getRvcInfo(): Promise<EngineInfo> {
@@ -659,7 +659,6 @@ export async function startConversion(mode: EngineMode, info: EngineInfo, voice:
       serverReadChunkSize: clamp(Math.round(settings.chunkSize), 64, 512),
       f0Detector: settings.f0Detector,
       indexRatio: clamp(settings.indexRatio, 0, 1),
-      gpu: -1,
       enableServerAudio: 1,
       passThrough: false,
       serverAudioStated: 1,

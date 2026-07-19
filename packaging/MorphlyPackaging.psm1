@@ -113,9 +113,10 @@ function Get-MorphlyPayloadEstimate {
 
     $components = New-Object System.Collections.Generic.List[object]
     $componentDefinitions = @(
-        @{ Name = "RVC server, models, and pretrain"; Path = (Join-Path $script:RepositoryRoot "server"); Exclude = @("__pycache__", "logs", "upload_dir", "tmp_dir") },
+        @{ Name = "RVC server (user models excluded)"; Path = (Join-Path $script:RepositoryRoot "server"); Exclude = @("__pycache__", "logs", "model_dir", "pretrain", "upload_dir", "tmp_dir") },
         @{ Name = "RVC fallback frontend"; Path = (Join-Path $script:RepositoryRoot "client\demo\dist"); Exclude = @() },
         @{ Name = "Morphly dashboard"; Path = (Join-Path $script:RepositoryRoot "Morphly-Voice-Dashboard\dist-static"); Exclude = @() },
+        @{ Name = "Electron desktop runtime"; Path = (Join-Path $script:RepositoryRoot "node_modules\electron\dist"); Exclude = @() },
         @{ Name = "Beatrice V2 runtime and models"; Path = (Join-Path $script:RepositoryRoot "engines\beatrice-v2"); Exclude = @("__pycache__", "logs", "settings", "upload_dir", "tmp_dir") },
         @{ Name = "Portable Python standard library"; Path = $PythonRuntime.stdlib; Exclude = @("site-packages", "__pycache__", "test", "tests") },
         @{ Name = "RVC Python packages"; Path = $PythonRuntime.sitePackages; Exclude = @("__pycache__") },
@@ -133,6 +134,24 @@ function Get-MorphlyPayloadEstimate {
             })
         }
     }
+
+    $selectedPretrainFiles = @(
+        (Join-Path $script:RepositoryRoot "server\pretrain\content_vec_500.onnx")
+    )
+    [int64]$selectedPretrainBytes = 0
+    [int64]$selectedPretrainCount = 0
+    foreach ($pretrainFile in $selectedPretrainFiles) {
+        if (Test-Path -LiteralPath $pretrainFile -PathType Leaf) {
+            $selectedPretrainBytes += (Get-Item -LiteralPath $pretrainFile).Length
+            $selectedPretrainCount += 1
+        }
+    }
+    $components.Add([pscustomobject]@{
+        Name = "Required RVC ONNX pretrain"
+        Path = (Join-Path $script:RepositoryRoot "server\pretrain")
+        Files = $selectedPretrainCount
+        Bytes = $selectedPretrainBytes
+    })
 
     [int64]$baseFilesBytes = 0
     [int64]$baseFilesCount = 0

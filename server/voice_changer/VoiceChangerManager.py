@@ -93,8 +93,14 @@ class VoiceChangerManager(ServerDeviceCallbacks):
         self.stored_setting: dict[str, str | int | float] = {}
         if os.path.exists(STORED_SETTING_FILE):
             self.stored_setting = json.load(open(STORED_SETTING_FILE, "r", encoding="utf-8"))
+        if self.stored_setting.get("f0Detector") not in {None, "pm", "dio", "harvest"}:
+            self.stored_setting["f0Detector"] = "pm"
+            json.dump(self.stored_setting, open(STORED_SETTING_FILE, "w"))
+        # Do not block the RVC health endpoint by cold-loading a potentially
+        # large model and index during process startup. The desktop selects a
+        # model explicitly when the user starts or chooses a voice.
         if "modelSlotIndex" in self.stored_setting:
-            self.update_settings("modelSlotIndex", self.stored_setting["modelSlotIndex"])
+            self.settings.modelSlotIndex = -1
         if "gpu" not in self.stored_setting:
             self.update_settings("gpu", 0)
         # for key, val in self.stored_setting.items():
@@ -391,7 +397,13 @@ class VoiceChangerManager(ServerDeviceCallbacks):
                     newVal = newVal % 1000
                 except:
                     newVal = re.sub("^\d+", "", val)  # 先頭の数字を取り除く。
-                logger.info(f"[Voice Changer] model slot is changed {self.settings.modelSlotIndex} -> {newVal}")
+                previous_slot = self.settings.modelSlotIndex
+                model_is_loaded = self.voiceChanger is not None
+                if previous_slot == newVal and model_is_loaded:
+                    logger.info(f"[Voice Changer] model slot {newVal} is already loaded; skipping reload")
+                    setattr(self.settings, key, newVal)
+                    return self.get_info()
+                logger.info(f"[Voice Changer] model slot is changed {previous_slot} -> {newVal}")
                 self.generateVoiceChanger(newVal)
                 # キャッシュ設定の反映
                 for k, v in self.stored_setting.items():

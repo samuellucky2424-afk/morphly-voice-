@@ -3,6 +3,15 @@ setlocal EnableExtensions
 
 cd /d "%~dp0"
 
+rem Desktop shortcuts enter here. Hand the long-running server to the hidden
+rem launcher so users see the dashboard instead of a Command Prompt window.
+if /I not "%~1"=="--background" (
+    if exist "%~dp0launch_morphly.vbs" (
+        start "" wscript.exe "%~dp0launch_morphly.vbs"
+        exit /b 0
+    )
+)
+
 if not defined MORPHLY_PYTHON (
     if exist "%~dp0runtime\python\python.exe" (
         set "MORPHLY_PYTHON=%~dp0runtime\python\python.exe"
@@ -30,7 +39,7 @@ if not defined MORPHLY_PUBLIC_PORT set "MORPHLY_PUBLIC_PORT=18000"
 if not defined MORPHLY_ENGINE_HOST set "MORPHLY_ENGINE_HOST=127.0.0.1"
 if not defined MORPHLY_ENGINE_PORT set "MORPHLY_ENGINE_PORT=18001"
 if not defined MORPHLY_DEFAULT_ENGINE set "MORPHLY_DEFAULT_ENGINE=rvc"
-if not defined MORPHLY_ENGINE_STARTUP_TIMEOUT set "MORPHLY_ENGINE_STARTUP_TIMEOUT=360"
+if not defined MORPHLY_ENGINE_STARTUP_TIMEOUT set "MORPHLY_ENGINE_STARTUP_TIMEOUT=50"
 if not defined MORPHLY_FIREBASE_PROJECT_ID set "MORPHLY_FIREBASE_PROJECT_ID=vdc-c3a79"
 
 echo [Morphly] Opening http://localhost:%MORPHLY_PUBLIC_PORT%
