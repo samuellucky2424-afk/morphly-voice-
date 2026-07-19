@@ -10,6 +10,11 @@ on:
         description: Existing stable release tag to build
         required: true
         type: string
+      artifact_run_id:
+        description: Optional earlier workflow run ID whose verified installer artifact should be published without rebuilding
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -26,6 +31,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
 
     steps:
       - name: Check out release source
@@ -34,6 +40,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Set up Node.js
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == '' }}
         uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -43,6 +50,7 @@ jobs:
             Morphly-Voice-Dashboard/package-lock.json
 
       - name: Validate tag and source versions
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == '' }}
         shell: pwsh
         run: |
           Set-StrictMode -Version Latest
@@ -81,6 +89,7 @@ jobs:
           "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install JavaScript dependencies
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == '' }}
         shell: pwsh
         run: |
           npm ci
@@ -93,6 +102,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Dashboard npm install failed." }
 
       - name: Restore packaged runtime from previous release
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == '' }}
         shell: pwsh
         run: |
           Set-StrictMode -Version Latest
@@ -181,6 +191,7 @@ jobs:
           Write-Host "Restored runtime payload from $($seed.Tag)."
 
       - name: Build and test dashboard
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == '' }}
         shell: pwsh
         run: |
           npm run dashboard:typecheck
@@ -191,18 +202,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Electron entrypoint syntax check failed." }
 
       - name: Test Python application
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == '' }}
         shell: pwsh
         run: |
           & .\runtime\python\python.exe -m pytest -q tests
           if ($LASTEXITCODE -ne 0) { throw "Python tests failed." }
 
       - name: Install Inno Setup
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == '' }}
         shell: pwsh
         run: |
           choco install innosetup --yes --no-progress
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup installation failed." }
 
       - name: Build and validate installer
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == '' }}
         shell: pwsh
         run: |
           .\packaging\Test-MorphlyPackaging.ps1
@@ -228,6 +242,7 @@ jobs:
           Write-Host "Validated $installerName ($($installer.Length) bytes, SHA-256 $actualHash)."
 
       - name: Retain installer as workflow artifact
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == '' }}
         uses: actions/upload-artifact@v7
         with:
           name: Morphly-Voice-Windows-${{ env.RELEASE_VERSION }}
@@ -236,6 +251,42 @@ jobs:
             packaging/output/Morphly-Voice-Setup-${{ env.RELEASE_VERSION }}.exe.sha256
           compression-level: 0
           if-no-files-found: error
+
+      - name: Download retained installer artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_run_id != '' }}
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw "Release tag must be stable semantic version vX.Y.Z: $env:RELEASE_TAG"
+          }
+          if ($env:ARTIFACT_RUN_ID -cnotmatch '^[1-9][0-9]*$') {
+            throw "Artifact workflow run ID must be numeric."
+          }
+          $version = $env:RELEASE_TAG.Substring(1)
+          $artifactName = "Morphly-Voice-Windows-$version"
+          New-Item -ItemType Directory -Path "packaging\output" -Force | Out-Null
+          gh run download $env:ARTIFACT_RUN_ID --repo $env:GITHUB_REPOSITORY --name $artifactName --dir "packaging\output"
+          if ($LASTEXITCODE -ne 0) { throw "Could not download retained artifact $artifactName." }
+
+          $installerName = "Morphly-Voice-Setup-$version.exe"
+          $installer = Get-Item -LiteralPath (Join-Path "packaging\output" $installerName)
+          if ($installer.Length -le 0 -or $installer.Length -ge 2GB) {
+            throw "Retained installer size is outside the GitHub release contract: $($installer.Length) bytes."
+          }
+          $checksumPath = "$($installer.FullName).sha256"
+          $record = (Get-Content -LiteralPath $checksumPath -Raw -Encoding ASCII).Trim()
+          $match = [regex]::Match($record, '^([0-9A-Fa-f]{64})\s+\*?([^\r\n]+)$')
+          if (-not $match.Success -or $match.Groups[2].Value.Trim() -cne $installerName) {
+            throw "Retained installer checksum sidecar is invalid."
+          }
+          $actualHash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash
+          if ($actualHash -cne $match.Groups[1].Value.ToUpperInvariant()) {
+            throw "Retained installer checksum verification failed."
+          }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Validated retained $installerName ($($installer.Length) bytes, SHA-256 $actualHash)."
 
       - name: Publish verified GitHub release
         shell: pwsh
@@ -246,13 +297,22 @@ jobs:
           $installer = Get-Item -LiteralPath "packaging\output\Morphly-Voice-Setup-$env:RELEASE_VERSION.exe"
           $checksum = Get-Item -LiteralPath "$($installer.FullName).sha256"
 
-          $releaseText = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            $release = $releaseText | ConvertFrom-Json
-          } else {
+          function Find-ReleaseByTag {
+            param([string]$Tag)
+            $allReleases = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw "Could not list GitHub releases." }
+            $matches = @($allReleases | Where-Object { [string]$_.tag_name -ceq $Tag })
+            if ($matches.Count -gt 1) { throw "Found more than one GitHub release for $Tag." }
+            if ($matches.Count -eq 1) { return $matches[0] }
+            return $null
+          }
+
+          $release = Find-ReleaseByTag $tag
+          if (-not $release) {
             gh release create $tag --repo $env:GITHUB_REPOSITORY --verify-tag --title "Morphly Voice $env:RELEASE_VERSION" --generate-notes --draft
             if ($LASTEXITCODE -ne 0) { throw "Could not create draft release $tag." }
-            $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
+            $release = Find-ReleaseByTag $tag
+            if (-not $release) { throw "Draft release $tag was created but could not be found by release ID." }
           }
 
           function Confirm-RemoteAsset {
@@ -283,11 +343,15 @@ jobs:
             if (-not (Confirm-RemoteAsset $release $file)) {
               gh release upload $tag $file.FullName --repo $env:GITHUB_REPOSITORY
               if ($LASTEXITCODE -ne 0) { throw "Could not upload $($file.Name)." }
-              $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
+              $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)" | ConvertFrom-Json
             }
           }
           if (-not (Confirm-RemoteAsset $release $installer) -or -not (Confirm-RemoteAsset $release $checksum)) {
             throw "GitHub did not verify both release assets. The release remains a draft."
           }
-          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)" -F draft=false -f make_latest=true | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Assets are verified, but publishing $tag failed; the release remains a draft." }
+          $published = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $published.draft) { throw "GitHub did not publish release $tag." }
+          $latest = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or [string]$latest.tag_name -cne $tag) { throw "Published release $tag is not marked latest." }
