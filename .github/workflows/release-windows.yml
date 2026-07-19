@@ -210,8 +210,22 @@ jobs:
           $workRoot = Join-Path $env:RUNNER_TEMP "morphly-packaging-work"
           .\packaging\Build-MorphlyInstaller.ps1 -Version $env:RELEASE_VERSION -WorkRoot $workRoot -ConfirmLargeBuild
           if ($LASTEXITCODE -ne 0) { throw "Installer build failed." }
-          .\packaging\Publish-MorphlyRelease.ps1 -Version $env:RELEASE_VERSION -ValidateOnly
-          if ($LASTEXITCODE -ne 0) { throw "Installer validation failed." }
+          $installerName = "Morphly-Voice-Setup-$env:RELEASE_VERSION.exe"
+          $installer = Get-Item -LiteralPath (Join-Path "packaging\output" $installerName)
+          if ($installer.Length -le 0 -or $installer.Length -ge 2GB) {
+            throw "Installer size is outside the GitHub release contract: $($installer.Length) bytes."
+          }
+          $checksumPath = "$($installer.FullName).sha256"
+          $record = (Get-Content -LiteralPath $checksumPath -Raw -Encoding ASCII).Trim()
+          $match = [regex]::Match($record, '^([0-9A-Fa-f]{64})\s+\*?([^\r\n]+)$')
+          if (-not $match.Success -or $match.Groups[2].Value.Trim() -cne $installerName) {
+            throw "Installer checksum sidecar is invalid."
+          }
+          $actualHash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash
+          if ($actualHash -cne $match.Groups[1].Value.ToUpperInvariant()) {
+            throw "Installer checksum verification failed."
+          }
+          Write-Host "Validated $installerName ($($installer.Length) bytes, SHA-256 $actualHash)."
 
       - name: Retain installer as workflow artifact
         uses: actions/upload-artifact@v7
