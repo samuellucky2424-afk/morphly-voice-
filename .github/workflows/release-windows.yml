@@ -32,6 +32,14 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
       ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+      VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_VAPID_KEY: ${{ vars.VITE_FIREBASE_VAPID_KEY }}
+      VITE_MORPHLY_API_URL: ${{ vars.VITE_MORPHLY_API_URL }}
 
     steps:
       - name: Check out release source
@@ -194,10 +202,44 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == '' }}
         shell: pwsh
         run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $requiredClientVariables = @(
+            "VITE_FIREBASE_API_KEY",
+            "VITE_FIREBASE_AUTH_DOMAIN",
+            "VITE_FIREBASE_PROJECT_ID",
+            "VITE_FIREBASE_APP_ID",
+            "VITE_MORPHLY_API_URL"
+          )
+          foreach ($name in $requiredClientVariables) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              throw "Required GitHub Actions repository variable $name is not configured."
+            }
+          }
+
           npm run dashboard:typecheck
           if ($LASTEXITCODE -ne 0) { throw "Dashboard type checks failed." }
           npm run dashboard:build
           if ($LASTEXITCODE -ne 0) { throw "Dashboard build failed." }
+
+          $dashboardAssets = @(Get-ChildItem -LiteralPath "Morphly-Voice-Dashboard\dist-static\assets" -Filter "*.js" -File)
+          if ($dashboardAssets.Count -eq 0) { throw "Dashboard build produced no JavaScript assets." }
+          foreach ($name in $requiredClientVariables) {
+            $expected = [Environment]::GetEnvironmentVariable($name)
+            $embedded = $false
+            foreach ($asset in $dashboardAssets) {
+              if (Select-String -LiteralPath $asset.FullName -SimpleMatch -Quiet -Pattern $expected) {
+                $embedded = $true
+                break
+              }
+            }
+            if (-not $embedded) {
+              throw "Dashboard build did not embed required client configuration $name."
+            }
+          }
+          Write-Host "Verified cloud client configuration in the static dashboard build."
+
           node --check electron-shell/main.cjs
           if ($LASTEXITCODE -ne 0) { throw "Electron entrypoint syntax check failed." }
 
