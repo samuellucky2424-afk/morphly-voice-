@@ -50,9 +50,15 @@ function Resolve-MorphlyInnoCompiler {
 }
 
 function Get-MorphlyPythonRuntimeInfo {
-    $venvPython = Join-Path $script:RepositoryRoot ".venv\Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
-        throw "Source Python environment is missing: $venvPython"
+    $pythonCandidates = @(
+        (Join-Path $script:RepositoryRoot ".venv\Scripts\python.exe"),
+        (Join-Path $script:RepositoryRoot "runtime\python\python.exe")
+    )
+    $sourcePython = $pythonCandidates |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        Select-Object -First 1
+    if (-not $sourcePython) {
+        throw "Source Python runtime is missing. Expected .venv\Scripts\python.exe or runtime\python\python.exe."
     }
 
     $pythonProbe = @'
@@ -71,7 +77,7 @@ print(json.dumps({
     'bits': struct.calcsize('P') * 8,
 }))
 '@
-    $probeOutput = & $venvPython -c $pythonProbe 2>&1
+    $probeOutput = & $sourcePython -c $pythonProbe 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Could not inspect the source Python environment: $($probeOutput -join ' ')"
     }
@@ -304,7 +310,7 @@ function Test-MorphlyPackageSource {
         $warnings.Add("Inno Setup 6 compiler (ISCC.exe) is not installed; staging can be prepared, but the installer EXE cannot be compiled.")
     }
     if (-not $pyInstallerVersion) {
-        $warnings.Add("PyInstaller is not installed in .venv. It is optional for this portable-Python installer layout and is not used by the build script.")
+        $warnings.Add("PyInstaller is not installed in the source Python runtime. It is optional for this portable-Python installer layout and is not used by the build script.")
     }
     if (-not $robocopy) {
         $errors.Add("robocopy.exe is required for reliable multi-gigabyte staging.")

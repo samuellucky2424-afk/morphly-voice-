@@ -397,6 +397,14 @@ def test_gateway_protects_engine_routes_and_strips_identity_headers(tmp_path: Pa
         assert status == 200
         assert b"Morphly" in body
 
+        status, _, body = _request(gateway.server_port, "GET", "/api/morphly/desktop-ready")
+        assert status == 200
+        assert json.loads(body) == {
+            "ok": True,
+            "service": "morphly-desktop-gateway",
+            "dashboardReady": True,
+        }
+
         status, headers, _ = _request(gateway.server_port, "GET", "/api/morphly/engine-status")
         assert status == 401
         assert headers["WWW-Authenticate"] == "Bearer"

@@ -827,6 +827,20 @@ class MorphlyGatewayHandler(BaseHTTPRequestHandler):
             self._send_preflight()
             return
 
+        if path == "/api/morphly/desktop-ready":
+            if self.command in {"GET", "HEAD"}:
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "service": "morphly-desktop-gateway",
+                        "dashboardReady": (self.config.dashboard_root / "index.html").is_file(),
+                    },
+                )
+            else:
+                self._send_json(405, {"ok": False, "error": "Method not allowed."})
+            return
+
         if self._request_requires_engine_authentication(path):
             if not self._require_engine_authentication():
                 return

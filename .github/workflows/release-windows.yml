@@ -1,0 +1,272 @@
+name: Build Windows release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release tag to build
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: morphly-windows-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    name: Build and publish Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            Morphly-Voice-Dashboard/package-lock.json
+
+      - name: Validate tag and source versions
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw "Release tag must be stable semantic version vX.Y.Z: $env:RELEASE_TAG"
+          }
+          $version = $env:RELEASE_TAG.Substring(1)
+          $versionCheck = @'
+          const fs = require("node:fs");
+          const expected = process.argv[1];
+          const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+          const rootPackage = read("package.json");
+          const rootLock = read("package-lock.json");
+          const dashboardPackage = read("Morphly-Voice-Dashboard/package.json");
+          const dashboardLock = read("Morphly-Voice-Dashboard/package-lock.json");
+          const electronPackage = read("electron-shell/package.json");
+          const sources = new Map([
+            ["package.json", rootPackage.version],
+            ["package-lock.json", rootLock.version],
+            ["package-lock.json root package", rootLock.packages[""].version],
+            ["Morphly-Voice-Dashboard/package.json", dashboardPackage.version],
+            ["Morphly-Voice-Dashboard/package-lock.json", dashboardLock.version],
+            ["Morphly-Voice-Dashboard/package-lock.json root package", dashboardLock.packages[""].version],
+            ["electron-shell/package.json", electronPackage.version],
+          ]);
+          for (const [file, actual] of sources) {
+            if (actual !== expected) {
+              console.error(`Version mismatch in ${file}: expected ${expected}, found ${actual}.`);
+              process.exitCode = 1;
+            }
+          }
+          '@
+          node -e $versionCheck $version
+          if ($LASTEXITCODE -ne 0) { throw "Release source versions do not match the tag." }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install JavaScript dependencies
+        shell: pwsh
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw "Root npm install failed." }
+          npm ci --prefix Morphly-Voice-Dashboard
+          if ($LASTEXITCODE -ne 0) { throw "Dashboard npm install failed." }
+
+      - name: Restore packaged runtime from previous release
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $targetVersion = [version]$env:RELEASE_VERSION
+          $releases = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Could not list previous GitHub releases." }
+
+          $candidates = foreach ($release in $releases) {
+            if ($release.draft -or $release.prerelease -or [string]$release.tag_name -notmatch '^v(\d+\.\d+\.\d+)$') { continue }
+            $candidateVersion = [version]$Matches[1]
+            if ($candidateVersion -ge $targetVersion) { continue }
+            $installerName = "Morphly-Voice-Setup-$candidateVersion.exe"
+            $checksumName = "$installerName.sha256"
+            $assetNames = @($release.assets | ForEach-Object { [string]$_.name })
+            if ($assetNames -contains $installerName -and $assetNames -contains $checksumName) {
+              [pscustomobject]@{
+                Version = $candidateVersion
+                Tag = [string]$release.tag_name
+                InstallerName = $installerName
+                ChecksumName = $checksumName
+              }
+            }
+          }
+          $seed = $candidates | Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $seed) {
+            throw "No earlier stable release contains both runtime bootstrap assets."
+          }
+
+          $downloadRoot = Join-Path $env:RUNNER_TEMP "morphly-bootstrap-download"
+          New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
+          gh release download $seed.Tag --repo $env:GITHUB_REPOSITORY --dir $downloadRoot --pattern $seed.InstallerName --pattern $seed.ChecksumName
+          if ($LASTEXITCODE -ne 0) { throw "Could not download runtime bootstrap $($seed.Tag)." }
+
+          $installer = Join-Path $downloadRoot $seed.InstallerName
+          $checksum = Join-Path $downloadRoot $seed.ChecksumName
+          $record = (Get-Content -LiteralPath $checksum -Raw -Encoding ASCII).Trim()
+          $match = [regex]::Match($record, '^([0-9A-Fa-f]{64})\s+\*?([^\r\n]+)$')
+          if (-not $match.Success -or $match.Groups[2].Value.Trim() -cne $seed.InstallerName) {
+            throw "Bootstrap checksum record is invalid."
+          }
+          $actualHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+          if ($actualHash -cne $match.Groups[1].Value.ToUpperInvariant()) {
+            throw "Bootstrap installer failed SHA-256 verification."
+          }
+
+          $bootstrapRoot = Join-Path $env:RUNNER_TEMP "morphly-bootstrap-installed"
+          $arguments = @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/NOICONS",
+            "/DIR=`"$bootstrapRoot`""
+          )
+          $install = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "Bootstrap installer exited with code $($install.ExitCode)."
+          }
+
+          function Copy-Tree {
+            param([string]$Source, [string]$Destination)
+            if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+              throw "Bootstrap runtime directory is missing: $Source"
+            }
+            New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+            & robocopy.exe $Source $Destination /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XJ /NP /NFL /NDL /NJH /NJS | Out-Host
+            if ($LASTEXITCODE -gt 7) { throw "Could not restore runtime directory $Source." }
+          }
+
+          Copy-Tree (Join-Path $bootstrapRoot "runtime\python") (Join-Path $env:GITHUB_WORKSPACE "runtime\python")
+          Copy-Tree (Join-Path $bootstrapRoot "engines\beatrice-v2") (Join-Path $env:GITHUB_WORKSPACE "engines\beatrice-v2")
+          New-Item -ItemType Directory -Path "server\pretrain" -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $bootstrapRoot "server\pretrain\content_vec_500.onnx") -Destination "server\pretrain\content_vec_500.onnx" -Force
+
+          $baseLibrary = "engines\beatrice-v2\_internal\base_library.zip"
+          $expectedBaseLibraryHash = "4684D1EE1692F5DA49315B8944B1F3BDBB7BCFE73C3FAFFFBD4E0637903BC14E"
+          if (-not (Test-Path -LiteralPath $baseLibrary -PathType Leaf)) {
+            throw "The tracked Beatrice embedded Python library is missing: $baseLibrary"
+          }
+          if ((Get-FileHash -LiteralPath $baseLibrary -Algorithm SHA256).Hash -cne $expectedBaseLibraryHash) {
+            throw "The Beatrice embedded Python library failed its pinned SHA-256 check."
+          }
+          Write-Host "Restored runtime payload from $($seed.Tag)."
+
+      - name: Build and test dashboard
+        shell: pwsh
+        run: |
+          npm run dashboard:typecheck
+          if ($LASTEXITCODE -ne 0) { throw "Dashboard type checks failed." }
+          npm run dashboard:build
+          if ($LASTEXITCODE -ne 0) { throw "Dashboard build failed." }
+          node --check electron-shell/main.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Electron entrypoint syntax check failed." }
+
+      - name: Test Python application
+        shell: pwsh
+        run: |
+          & .\runtime\python\python.exe -m pytest -q tests
+          if ($LASTEXITCODE -ne 0) { throw "Python tests failed." }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup installation failed." }
+
+      - name: Build and validate installer
+        shell: pwsh
+        run: |
+          .\packaging\Test-MorphlyPackaging.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Packaging preflight failed." }
+          $workRoot = Join-Path $env:RUNNER_TEMP "morphly-packaging-work"
+          .\packaging\Build-MorphlyInstaller.ps1 -Version $env:RELEASE_VERSION -WorkRoot $workRoot -ConfirmLargeBuild
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed." }
+          .\packaging\Publish-MorphlyRelease.ps1 -Version $env:RELEASE_VERSION -ValidateOnly
+          if ($LASTEXITCODE -ne 0) { throw "Installer validation failed." }
+
+      - name: Retain installer as workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Morphly-Voice-Windows-${{ env.RELEASE_VERSION }}
+          path: |
+            packaging/output/Morphly-Voice-Setup-${{ env.RELEASE_VERSION }}.exe
+            packaging/output/Morphly-Voice-Setup-${{ env.RELEASE_VERSION }}.exe.sha256
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Publish verified GitHub release
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $tag = $env:RELEASE_TAG
+          $installer = Get-Item -LiteralPath "packaging\output\Morphly-Voice-Setup-$env:RELEASE_VERSION.exe"
+          $checksum = Get-Item -LiteralPath "$($installer.FullName).sha256"
+
+          $releaseText = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $release = $releaseText | ConvertFrom-Json
+          } else {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --verify-tag --title "Morphly Voice $env:RELEASE_VERSION" --generate-notes --draft
+            if ($LASTEXITCODE -ne 0) { throw "Could not create draft release $tag." }
+            $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
+          }
+
+          function Confirm-RemoteAsset {
+            param($Release, [System.IO.FileInfo]$File)
+            $matches = @($Release.assets | Where-Object { [string]$_.name -ceq $File.Name })
+            if ($matches.Count -ne 1) { return $false }
+            if ([int64]$matches[0].size -ne [int64]$File.Length) {
+              throw "Existing release asset $($File.Name) has the wrong size. Refusing to replace it."
+            }
+            if ($matches[0].digest) {
+              $expected = "sha256:$((Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash.ToLowerInvariant())"
+              if ([string]$matches[0].digest -cne $expected) {
+                throw "Existing release asset $($File.Name) has the wrong digest. Refusing to replace it."
+              }
+            }
+            return $true
+          }
+
+          if (-not $release.draft) {
+            if (-not (Confirm-RemoteAsset $release $installer) -or -not (Confirm-RemoteAsset $release $checksum)) {
+              throw "Release $tag is already public but is missing a verified asset. Refusing to mutate it."
+            }
+            Write-Host "Release $tag is already published with verified assets."
+            exit 0
+          }
+
+          foreach ($file in @($installer, $checksum)) {
+            if (-not (Confirm-RemoteAsset $release $file)) {
+              gh release upload $tag $file.FullName --repo $env:GITHUB_REPOSITORY
+              if ($LASTEXITCODE -ne 0) { throw "Could not upload $($file.Name)." }
+              $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
+            }
+          }
+          if (-not (Confirm-RemoteAsset $release $installer) -or -not (Confirm-RemoteAsset $release $checksum)) {
+            throw "GitHub did not verify both release assets. The release remains a draft."
+          }
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw "Assets are verified, but publishing $tag failed; the release remains a draft." }

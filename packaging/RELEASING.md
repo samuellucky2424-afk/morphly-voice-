@@ -5,10 +5,18 @@ Morphly Voice updates are published as GitHub Releases in
 latest published, non-prerelease release. A commit on `main` is not an update
 until a new versioned installer has been built, verified, and published.
 
-The release publisher is intended to run on the provisioned Windows packaging
-machine. The repository does not contain the complete Python runtime, engine
-binaries, or model files needed to recreate the installer on a standard
-GitHub-hosted runner.
+Stable version tags are built by `.github/workflows/release-windows.yml` on a
+GitHub-hosted Windows runner. Because the repository does not contain the full
+Python runtime, engine binaries, or model files, the workflow verifies and
+silently extracts the newest older Morphly installer that has both required
+release assets. It uses that installed payload only as the runtime seed, then
+overlays the tagged application source and rebuilds the dashboard, Electron
+shell, manifests, checksums, and installer.
+
+The Beatrice `base_library.zip` repair is tracked separately and pinned by
+SHA-256 because installers before 0.2.2 accidentally omitted that file. Once a
+workflow-built release is available, later releases automatically use the
+newest qualifying installer as their runtime seed.
 
 ## Release contract
 
@@ -41,9 +49,23 @@ dashboard.
    cannot grant copyright, consent, publicity, or redistribution rights.
 4. Build and verify the dashboard and application tests.
 
-## Build the installer
+## Automated release build
 
-From the repository root, run the packaging preflight and then the large build:
+Pushing a stable tag such as `v0.2.3` runs the Windows release workflow. The
+workflow validates that every package version matches the tag, installs locked
+JavaScript dependencies, restores and verifies the runtime seed, runs tests,
+builds the installer, retains a workflow artifact, then creates a draft GitHub
+Release. It publishes the release only after GitHub reports both exact assets
+with the expected sizes and available SHA-256 digests.
+
+The workflow may also be started manually for an existing tag. It never
+overwrites a release asset: a public release with a missing or mismatched asset
+causes the job to fail.
+
+## Local fallback build
+
+On a provisioned Windows packaging machine, run the packaging preflight and
+then the large build:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\Test-MorphlyPackaging.ps1

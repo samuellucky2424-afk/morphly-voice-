@@ -1,18 +1,30 @@
 const { app, BrowserWindow, dialog, shell } = require("electron");
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const net = require("node:net");
 const path = require("node:path");
 
 const APP_ROOT = app.isPackaged
   ? path.resolve(process.resourcesPath, "..", "..")
   : path.resolve(__dirname, "..");
-const DASHBOARD_URL = "http://127.0.0.1:18000/";
+const DASHBOARD_HOST = "127.0.0.1";
+const DEFAULT_DASHBOARD_PORT = 18000;
+const GATEWAY_IDENTITY = "morphly-desktop-gateway";
 const LOG_ROOT = path.join(APP_ROOT, "runtime-logs");
 const SUPERVISOR_LOG = path.join(LOG_ROOT, "desktop-supervisor.log");
 const APP_ICON = path.join(APP_ROOT, "Morphly-Voice-Dashboard", "public", "morphly-icon-512.png");
 let mainWindow = null;
 let supervisorProcess = null;
 let ownsSupervisor = false;
+let dashboardPort = DEFAULT_DASHBOARD_PORT;
+
+function dashboardOrigin() {
+  return `http://${DASHBOARD_HOST}:${dashboardPort}`;
+}
+
+function dashboardUrl(pathname = "/") {
+  return new URL(pathname, `${dashboardOrigin()}/`).toString();
+}
 
 app.setName("Morphly Voice");
 app.setAppUserModelId("com.morphly.voice");
@@ -37,11 +49,53 @@ function pythonRuntime() {
 
 async function dashboardReady() {
   try {
-    const response = await fetch(DASHBOARD_URL, { signal: AbortSignal.timeout(750) });
-    return response.status >= 200 && response.status < 500;
+    const response = await fetch(dashboardUrl("/api/morphly/desktop-ready"), {
+      signal: AbortSignal.timeout(750),
+    });
+    if (!response.ok) return false;
+    const status = await response.json();
+    return status?.ok === true
+      && status?.service === GATEWAY_IDENTITY
+      && status?.dashboardReady === true;
   } catch {
     return false;
   }
+}
+
+function canListenOn(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.unref();
+    probe.once("error", () => resolve(false));
+    probe.listen({ host: DASHBOARD_HOST, port, exclusive: true }, () => {
+      probe.close(() => resolve(true));
+    });
+  });
+}
+
+function findOpenPort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.unref();
+    probe.once("error", reject);
+    probe.listen({ host: DASHBOARD_HOST, port: 0, exclusive: true }, () => {
+      const address = probe.address();
+      const port = typeof address === "object" && address ? address.port : null;
+      probe.close((error) => {
+        if (error) reject(error);
+        else if (port) resolve(port);
+        else reject(new Error("Could not reserve a local dashboard port."));
+      });
+    });
+  });
+}
+
+async function selectDashboardPort() {
+  if (await canListenOn(DEFAULT_DASHBOARD_PORT)) {
+    dashboardPort = DEFAULT_DASHBOARD_PORT;
+    return;
+  }
+  dashboardPort = await findOpenPort();
 }
 
 function startSupervisor() {
@@ -53,8 +107,8 @@ function startSupervisor() {
 
   supervisorProcess = spawn(runtime.executable, [
     path.join(APP_ROOT, "morphly_supervisor.py"),
-    "--public-host", "127.0.0.1",
-    "--public-port", "18000",
+    "--public-host", DASHBOARD_HOST,
+    "--public-port", String(dashboardPort),
     "--engine-host", "127.0.0.1",
     "--engine-port", "18001",
     "--startup-timeout", "120",
@@ -107,7 +161,11 @@ function createWindow() {
     return { action: "deny" };
   });
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (url.startsWith(DASHBOARD_URL)) return;
+    try {
+      if (new URL(url).origin === dashboardOrigin()) return;
+    } catch {
+      // Invalid navigation targets are blocked below.
+    }
     event.preventDefault();
     if (/^https:\/\//i.test(url)) void shell.openExternal(url);
   });
@@ -130,9 +188,12 @@ function showStartupError(error) {
 
 async function launch() {
   await createWindow();
-  if (!(await dashboardReady())) startSupervisor();
+  if (!(await dashboardReady())) {
+    await selectDashboardPort();
+    startSupervisor();
+  }
   await waitForDashboard();
-  await mainWindow.loadURL(DASHBOARD_URL);
+  await mainWindow.loadURL(dashboardUrl());
 }
 
 app.whenReady().then(launch).catch(showStartupError);

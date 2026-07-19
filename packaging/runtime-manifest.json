@@ -59,11 +59,6 @@
       "purpose": "Neutral first-install Beatrice model-slot configuration"
     },
     {
-      "path": ".venv/Scripts/python.exe",
-      "kind": "file",
-      "purpose": "Source Python environment used to assemble the portable runtime"
-    },
-    {
       "path": "Morphly-Voice-Dashboard/dist-static",
       "kind": "directory",
       "patterns": [
