@@ -13,6 +13,14 @@ from voice_changer.RVC.RVCModelSlotGenerator import RVCModelSlotGenerator
 from downloader.Downloader import download, download_no_tqdm
 
 logger = VoiceChangaerLogger.get_instance().getLogger()
+_reported_sample_catalog_issues: set[str] = set()
+
+
+def _warn_once(issue: str, message: str, *args: Any) -> None:
+    if issue in _reported_sample_catalog_issues:
+        return
+    _reported_sample_catalog_issues.add(issue)
+    logger.warning(message, *args)
 
 
 def downloadInitialSamples(mode: RVCSampleMode, model_dir: str):
@@ -38,8 +46,25 @@ def downloadSample(mode: RVCSampleMode, modelId: str, model_dir: str, slotIndex:
 def getSampleInfos(mode: RVCSampleMode):
     sampleJsonUrls, _sampleModels = getSampleJsonAndModelIds(mode)
     sampleJsons = _generateSampleJsons(sampleJsonUrls)
-    samples = _generateSampleList(sampleJsons)
-    return samples
+    availableSampleJsons = [path for path in sampleJsons if os.path.isfile(path)]
+    missingSampleJsons = [path for path in sampleJsons if not os.path.isfile(path)]
+    if missingSampleJsons:
+        _warn_once(
+            "missing:" + ",".join(missingSampleJsons),
+            "[Voice Changer] optional sample catalog is unavailable: %s",
+            ", ".join(missingSampleJsons),
+        )
+    if not availableSampleJsons:
+        return []
+    try:
+        return _generateSampleList(availableSampleJsons)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        _warn_once(
+            "invalid:" + ",".join(availableSampleJsons),
+            "[Voice Changer] optional sample catalog could not be read: %s",
+            exc,
+        )
+        return []
 
 
 def _downloadSampleJsons(sampleJsonUrls: list[str]):

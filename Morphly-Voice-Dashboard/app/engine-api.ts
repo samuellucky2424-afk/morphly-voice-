@@ -383,7 +383,11 @@ export async function switchGatewayMode(mode: EngineMode) {
 }
 
 async function getRvcInfo(): Promise<EngineInfo> {
-  const info = await requestJson<Record<string, unknown>>("/info");
+  const response = await requestJson<unknown>("/info");
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    throw new EngineApiError("RVC returned an invalid engine-information response. Restart the RVC engine and try again.");
+  }
+  const info = response as Record<string, unknown>;
   return commonEngineInfo(
     "rvc",
     info,

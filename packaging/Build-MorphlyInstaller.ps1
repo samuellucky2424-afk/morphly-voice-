@@ -237,7 +237,11 @@ foreach ($pattern in @("python.exe", "pythonw.exe", "python3.dll", "python*.dll"
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "default-rvc-settings.json") -Destination (Join-Path $stageRoot "server\stored_setting.json")
 New-Item -ItemType Directory -Path (Join-Path $stageRoot "engines\beatrice-v2\settings") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "default-beatrice-settings.json") -Destination (Join-Path $stageRoot "engines\beatrice-v2\settings\vc_conf.json")
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "default-beatrice-slot-1-params.json") -Destination (Join-Path $stageRoot "engines\beatrice-v2\model_dir\1\params.json") -Force
+$beatriceSlotSource = Join-Path $PSScriptRoot "default-beatrice-slot-1-params.json"
+$beatriceSlotDestination = Join-Path $stageRoot "engines\beatrice-v2\model_dir\1\params.json"
+$beatriceSlotJson = Get-Content -LiteralPath $beatriceSlotSource -Raw -Encoding UTF8
+$utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+[IO.File]::WriteAllText($beatriceSlotDestination, $beatriceSlotJson, $utf8WithoutBom)
 foreach ($directory in @(
     "runtime-logs",
     "runtime-state",
