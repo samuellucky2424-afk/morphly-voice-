@@ -47,8 +47,10 @@ VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#AppVersion}
 
 [Files]
-Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: "server\stored_setting.json,engines\beatrice-v2\settings\vc_conf.json,engines\beatrice-v2\model_dir\1\params.json"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: "server\stored_setting.json,server\model_dir\0\params.json,server\model_dir\0\HatsuneMikuOv2.pth,engines\beatrice-v2\settings\vc_conf.json,engines\beatrice-v2\model_dir\1\params.json"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\server\stored_setting.json"; DestDir: "{app}\server"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
+Source: "{#StageDir}\server\model_dir\0\params.json"; DestDir: "{app}\server\model_dir\0"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
+Source: "{#StageDir}\server\model_dir\0\HatsuneMikuOv2.pth"; DestDir: "{app}\server\model_dir\0"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
 Source: "{#StageDir}\engines\beatrice-v2\settings\vc_conf.json"; DestDir: "{app}\engines\beatrice-v2\settings"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
 Source: "{#StageDir}\engines\beatrice-v2\model_dir\1\params.json"; DestDir: "{app}\engines\beatrice-v2\model_dir\1"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
 

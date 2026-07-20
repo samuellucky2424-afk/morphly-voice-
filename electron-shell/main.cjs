@@ -12,6 +12,7 @@ const DEFAULT_DASHBOARD_PORT = 18000;
 const GATEWAY_IDENTITY = "morphly-desktop-gateway";
 const LOG_ROOT = path.join(APP_ROOT, "runtime-logs");
 const SUPERVISOR_LOG = path.join(LOG_ROOT, "desktop-supervisor.log");
+const ENGINE_OWNER_FILE = path.join(APP_ROOT, "runtime-state", "engine-owner.json");
 const APP_ICON = path.join(APP_ROOT, "Morphly-Voice-Dashboard", "public", "morphly-icon-512.png");
 let mainWindow = null;
 let supervisorProcess = null;
@@ -126,6 +127,32 @@ function startSupervisor() {
   supervisorProcess.once("exit", () => { supervisorProcess = null; });
 }
 
+function ownedEnginePid(supervisorPid) {
+  try {
+    const owner = JSON.parse(fs.readFileSync(ENGINE_OWNER_FILE, "utf8"));
+    const enginePid = Number(owner?.enginePid);
+    const recordedSupervisorPid = Number(owner?.supervisorPid);
+    const enginePort = Number(owner?.enginePort);
+    const executable = path.resolve(String(owner?.executable || ""));
+    const trustedExecutables = [
+      path.join(APP_ROOT, "runtime", "python", "python.exe"),
+      path.join(APP_ROOT, ".venv", "Scripts", "python.exe"),
+      path.join(APP_ROOT, "engines", "beatrice-v2", "main.exe"),
+    ].map((candidate) => path.resolve(candidate).toLowerCase());
+    if (
+      Number.isSafeInteger(enginePid) && enginePid > 0
+      && recordedSupervisorPid === supervisorPid
+      && enginePort === 18001
+      && trustedExecutables.includes(executable.toLowerCase())
+    ) {
+      return enginePid;
+    }
+  } catch {
+    // The supervisor startup recovery handles missing or incomplete ownership state.
+  }
+  return null;
+}
+
 async function waitForDashboard(timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -201,9 +228,18 @@ app.whenReady().then(launch).catch(showStartupError);
 app.on("window-all-closed", () => app.quit());
 app.on("before-quit", () => {
   if (!ownsSupervisor || !supervisorProcess?.pid) return;
-  spawnSync("taskkill.exe", ["/PID", String(supervisorProcess.pid), "/T", "/F"], {
+  const supervisorPid = supervisorProcess.pid;
+  const enginePid = ownedEnginePid(supervisorPid);
+  spawnSync("taskkill.exe", ["/PID", String(supervisorPid), "/T", "/F"], {
     windowsHide: true,
     stdio: "ignore",
   });
+  if (enginePid) {
+    spawnSync("taskkill.exe", ["/PID", String(enginePid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    try { fs.unlinkSync(ENGINE_OWNER_FILE); } catch { /* Already removed by the supervisor. */ }
+  }
   supervisorProcess = null;
 });

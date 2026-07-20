@@ -51,7 +51,7 @@ dashboard.
 
 ## Automated release build
 
-Pushing a stable tag such as `v0.2.5` runs the Windows release workflow. The
+Pushing a stable tag such as `v0.2.6` runs the Windows release workflow. The
 workflow validates that every package version matches the tag, installs locked
 JavaScript dependencies, restores and verifies the runtime seed, runs tests,
 builds the installer, retains a workflow artifact, then creates a draft GitHub

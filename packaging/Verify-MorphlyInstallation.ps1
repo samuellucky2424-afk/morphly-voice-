@@ -17,6 +17,42 @@ if (-not (Test-Path -LiteralPath $beatriceBaseLibraryPath -PathType Leaf)) {
 }
 
 $failures = New-Object System.Collections.Generic.List[string]
+$rvcRoot = Join-Path $root "server\model_dir"
+$rvcSlotRoot = Join-Path $rvcRoot "0"
+$rvcSlotRootPrefix = $rvcSlotRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+$rvcSlotPath = Join-Path $rvcSlotRoot "params.json"
+if (-not (Test-Path -LiteralPath $rvcSlotPath -PathType Leaf)) {
+    $failures.Add("Bundled RVC slot metadata is missing: $rvcSlotPath")
+} else {
+    try {
+        $rvcSlot = Get-Content -LiteralPath $rvcSlotPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([string]$rvcSlot.voiceChangerType -cne "RVC") {
+            $failures.Add("Bundled RVC slot 0 has an unexpected voiceChangerType: $($rvcSlot.voiceChangerType)")
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$rvcSlot.name)) {
+            $failures.Add("Bundled RVC slot 0 has no display name.")
+        }
+        if (@($rvcSlot.speakers.PSObject.Properties).Count -lt 1) {
+            $failures.Add("Bundled RVC slot 0 contains no speaker metadata.")
+        }
+        $modelFile = [string]$rvcSlot.modelFile
+        if ([string]::IsNullOrWhiteSpace($modelFile)) {
+            $failures.Add("Bundled RVC slot 0 does not identify a model file.")
+        } else {
+            $modelPath = [IO.Path]::GetFullPath((Join-Path $rvcSlotRoot $modelFile))
+            if (-not $modelPath.StartsWith($rvcSlotRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                $failures.Add("Bundled RVC model path leaves slot 0: $modelFile")
+            } elseif (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
+                $failures.Add("Bundled RVC model file is missing: $modelPath")
+            } elseif ((Get-Item -LiteralPath $modelPath).Length -lt 1MB) {
+                $failures.Add("Bundled RVC model file is unexpectedly small: $modelPath")
+            }
+        }
+    } catch {
+        $failures.Add("Bundled RVC slot metadata is invalid JSON: $($_.Exception.Message)")
+    }
+}
+
 $beatriceRoot = Join-Path $root "engines\beatrice-v2"
 $beatriceRootPrefix = $beatriceRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 $beatriceSlotPath = Join-Path $beatriceRoot "model_dir\1\params.json"

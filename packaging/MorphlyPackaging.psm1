@@ -120,6 +120,7 @@ function Get-MorphlyPayloadEstimate {
     $components = New-Object System.Collections.Generic.List[object]
     $componentDefinitions = @(
         @{ Name = "RVC server (user models excluded)"; Path = (Join-Path $script:RepositoryRoot "server"); Exclude = @("__pycache__", "logs", "model_dir", "pretrain", "upload_dir", "tmp_dir") },
+        @{ Name = "Bundled default RVC voice"; Path = (Join-Path $script:RepositoryRoot "server\model_dir"); Exclude = @("__pycache__") },
         @{ Name = "RVC fallback frontend"; Path = (Join-Path $script:RepositoryRoot "client\demo\dist"); Exclude = @() },
         @{ Name = "Morphly dashboard"; Path = (Join-Path $script:RepositoryRoot "Morphly-Voice-Dashboard\dist-static"); Exclude = @() },
         @{ Name = "Electron desktop runtime"; Path = (Join-Path $script:RepositoryRoot "node_modules\electron\dist"); Exclude = @() },

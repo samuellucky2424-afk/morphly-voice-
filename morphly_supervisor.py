@@ -4,6 +4,7 @@ import argparse
 import atexit
 import base64
 import contextlib
+import ctypes
 import http.client
 import ipaddress
 import json
@@ -40,6 +41,7 @@ DEFAULT_DASHBOARD_ROOT = REPO_ROOT / "Morphly-Voice-Dashboard" / "dist-static"
 DEFAULT_LAUNCHER = REPO_ROOT / "start_engine_mode.bat"
 DEFAULT_STATE_FILE = REPO_ROOT / "runtime-state" / "engine-mode.json"
 DEFAULT_LOG_ROOT = REPO_ROOT / "runtime-logs"
+ENGINE_OWNER_FILE_NAME = "engine-owner.json"
 
 VALID_MODES = ("rvc", "beatrice")
 COPY_BUFFER_SIZE = 1024 * 1024
@@ -102,8 +104,9 @@ ENGINE_ROUTE_PREFIXES = (
 
 HEALTH_PATHS = {
     "rvc": ("/info",),
-    "beatrice": ("/api/server-properties/properties",),
+    "beatrice": ("/api/slot-manager/slots/1",),
 }
+ENGINE_HEALTH_RESPONSE_LIMIT = 2 * 1024 * 1024
 
 UPDATER_ROUTE_PREFIX = "/api/morphly/updater/"
 UPDATER_ROUTES = {
@@ -383,6 +386,17 @@ class GatewayConfig:
     def engine_origin(self) -> str:
         return f"http://{self.engine_host}:{self.engine_port}"
 
+    @property
+    def engine_owner_file(self) -> Path:
+        return self.state_file.parent / ENGINE_OWNER_FILE_NAME
+
+
+@dataclass(frozen=True)
+class WindowsProcessInfo:
+    pid: int
+    parent_pid: int
+    executable: Path | None
+
 
 class EngineSwitchError(RuntimeError):
     def __init__(self, message: str, status: dict[str, object]):
@@ -423,6 +437,247 @@ class EngineSupervisor:
             encoding="utf-8",
         )
         os.replace(temporary, self.config.state_file)
+
+    @staticmethod
+    def _same_path(left: Path | str, right: Path | str) -> bool:
+        return os.path.normcase(os.path.abspath(os.fspath(left))) == os.path.normcase(
+            os.path.abspath(os.fspath(right))
+        )
+
+    @staticmethod
+    def _windows_process_info(pid: int) -> WindowsProcessInfo | None:
+        if os.name != "nt" or pid <= 0:
+            return None
+
+        from ctypes import wintypes
+
+        class ProcessEntry32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_snapshot = kernel32.CreateToolhelp32Snapshot
+        create_snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+        create_snapshot.restype = wintypes.HANDLE
+        process_first = kernel32.Process32FirstW
+        process_first.argtypes = (wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W))
+        process_first.restype = wintypes.BOOL
+        process_next = kernel32.Process32NextW
+        process_next.argtypes = (wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W))
+        process_next.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+
+        snapshot = create_snapshot(0x00000002, 0)
+        if snapshot == wintypes.HANDLE(-1).value:
+            return None
+        parent_pid: int | None = None
+        try:
+            entry = ProcessEntry32W()
+            entry.dwSize = ctypes.sizeof(entry)
+            found = bool(process_first(snapshot, ctypes.byref(entry)))
+            while found:
+                if int(entry.th32ProcessID) == pid:
+                    parent_pid = int(entry.th32ParentProcessID)
+                    break
+                found = bool(process_next(snapshot, ctypes.byref(entry)))
+        finally:
+            close_handle(snapshot)
+        if parent_pid is None:
+            return None
+
+        executable: Path | None = None
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        open_process.restype = wintypes.HANDLE
+        process_handle = open_process(0x1000, False, pid)
+        if process_handle:
+            try:
+                query_image_name = kernel32.QueryFullProcessImageNameW
+                query_image_name.argtypes = (
+                    wintypes.HANDLE,
+                    wintypes.DWORD,
+                    wintypes.LPWSTR,
+                    ctypes.POINTER(wintypes.DWORD),
+                )
+                query_image_name.restype = wintypes.BOOL
+                buffer = ctypes.create_unicode_buffer(32768)
+                size = wintypes.DWORD(len(buffer))
+                if query_image_name(process_handle, 0, buffer, ctypes.byref(size)):
+                    executable = Path(buffer.value)
+            finally:
+                close_handle(process_handle)
+        return WindowsProcessInfo(pid=pid, parent_pid=parent_pid, executable=executable)
+
+    def _windows_listener_pids(self) -> set[int]:
+        if os.name != "nt":
+            return set()
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return set()
+
+        listeners: set[int] = set()
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) < 5 or fields[0].upper() != "TCP" or fields[3].upper() != "LISTENING":
+                continue
+            local_address = fields[1]
+            if ":" not in local_address:
+                continue
+            try:
+                local_port = int(local_address.rsplit(":", 1)[1])
+                listener_pid = int(fields[4])
+            except ValueError:
+                continue
+            if local_port == self.config.engine_port and listener_pid > 0:
+                listeners.add(listener_pid)
+        return listeners
+
+    def _load_engine_owner(self) -> dict[str, object] | None:
+        try:
+            payload = json.loads(self.config.engine_owner_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _persist_engine_owner(self, *, process: subprocess.Popen[bytes], mode: str, executable: Path) -> None:
+        owner_file = self.config.engine_owner_file
+        owner_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = owner_file.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "supervisorPid": os.getpid(),
+                    "enginePid": process.pid,
+                    "engineHost": self.config.engine_host,
+                    "enginePort": self.config.engine_port,
+                    "mode": mode,
+                    "executable": str(executable.resolve()),
+                    "createdAt": int(time.time()),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, owner_file)
+
+    def _clear_engine_owner(self, *, engine_pid: int) -> None:
+        owner = self._load_engine_owner()
+        if owner is None:
+            return
+        try:
+            recorded_pid = int(owner.get("enginePid", 0))
+            supervisor_pid = int(owner.get("supervisorPid", 0))
+        except (TypeError, ValueError):
+            return
+        if recorded_pid == engine_pid and supervisor_pid == os.getpid():
+            with contextlib.suppress(OSError):
+                self.config.engine_owner_file.unlink()
+
+    def _expected_engine_executable(self, mode: str) -> Path | None:
+        if mode == "rvc":
+            return Path(sys.executable).resolve()
+        if mode == "beatrice":
+            return (REPO_ROOT / "engines" / "beatrice-v2" / "main.exe").resolve()
+        return None
+
+    @staticmethod
+    def _terminate_windows_process_tree(pid: int) -> bool:
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=6,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
+
+    def _recover_orphaned_engine(self) -> bool:
+        if os.name != "nt":
+            return False
+        listener_pids = self._windows_listener_pids()
+        if len(listener_pids) != 1:
+            return False
+        listener_pid = next(iter(listener_pids))
+        process_info = self._windows_process_info(listener_pid)
+        if process_info is None or process_info.executable is None:
+            return False
+
+        safe_to_terminate = False
+        owner = self._load_engine_owner()
+        if owner is not None:
+            try:
+                owner_engine_pid = int(owner.get("enginePid", 0))
+                owner_supervisor_pid = int(owner.get("supervisorPid", 0))
+                owner_engine_port = int(owner.get("enginePort", 0))
+            except (TypeError, ValueError):
+                owner_engine_pid = owner_supervisor_pid = owner_engine_port = 0
+            owner_mode = str(owner.get("mode", "")).lower()
+            expected_executable = self._expected_engine_executable(owner_mode)
+            recorded_executable = str(owner.get("executable", ""))
+            supervisor_is_stale = (
+                owner_supervisor_pid == os.getpid()
+                or self._windows_process_info(owner_supervisor_pid) is None
+            )
+            safe_to_terminate = bool(
+                owner_engine_pid == listener_pid
+                and owner_engine_port == self.config.engine_port
+                and expected_executable is not None
+                and recorded_executable
+                and self._same_path(recorded_executable, expected_executable)
+                and self._same_path(process_info.executable, expected_executable)
+                and supervisor_is_stale
+            )
+
+        # v0.2.5 did not write ownership records. Its Beatrice process is safe to
+        # recover only when it is the exact bundled executable and its parent is gone.
+        if not safe_to_terminate:
+            beatrice_executable = self._expected_engine_executable("beatrice")
+            safe_to_terminate = bool(
+                beatrice_executable is not None
+                and self._same_path(process_info.executable, beatrice_executable)
+                and process_info.parent_pid > 0
+                and self._windows_process_info(process_info.parent_pid) is None
+            )
+
+        if not safe_to_terminate:
+            return False
+        print(
+            f"[Morphly] Recovering orphaned engine process {listener_pid} "
+            f"on {self.config.engine_host}:{self.config.engine_port}.",
+            flush=True,
+        )
+        if not self._terminate_windows_process_tree(listener_pid):
+            return False
+        port_closed = self._wait_for_engine_port_to_close(timeout=6)
+        if port_closed:
+            with contextlib.suppress(OSError):
+                self.config.engine_owner_file.unlink()
+        return port_closed
 
     def start_initial_async(self) -> None:
         thread = threading.Thread(
@@ -563,7 +818,7 @@ class EngineSupervisor:
     def _launch_and_wait(self, mode: str, *, phase: str) -> None:
         if not self.config.launcher.is_file():
             raise FileNotFoundError(f"Engine launcher is missing: {self.config.launcher}")
-        if self._engine_port_is_open():
+        if self._engine_port_is_open() and not self._recover_orphaned_engine():
             raise RuntimeError(
                 f"Internal engine port {self.config.engine_host}:{self.config.engine_port} "
                 "is already in use by a process outside this supervisor."
@@ -637,6 +892,21 @@ class EngineSupervisor:
             log_handle.close()
             raise
 
+        try:
+            self._persist_engine_owner(
+                process=process,
+                mode=mode,
+                executable=Path(command[0]),
+            )
+        except Exception:
+            if os.name == "nt":
+                self._terminate_windows_process_tree(process.pid)
+            else:
+                with contextlib.suppress(OSError):
+                    os.killpg(process.pid, signal.SIGTERM)
+            log_handle.close()
+            raise
+
         with self._state_lock:
             self._process = process
             self._log_handle = log_handle
@@ -683,15 +953,45 @@ class EngineSupervisor:
                     headers={"Host": f"{self.config.engine_host}:{self.config.engine_port}"},
                 )
                 response = connection.getresponse()
-                response.read(1024)
+                body = response.read(ENGINE_HEALTH_RESPONSE_LIMIT + 1)
                 if 200 <= response.status < 400:
-                    return True, None
+                    ready, detail = self._health_payload_ready(mode, body)
+                    if ready:
+                        return True, None
+                    if detail:
+                        continue
                 detail = f"Health endpoint {path} returned HTTP {response.status}."
             except (OSError, http.client.HTTPException) as exc:
                 detail = f"Health endpoint {path} is not ready: {exc}"
             finally:
                 connection.close()
         return False, detail
+
+    @staticmethod
+    def _health_payload_ready(mode: str, body: bytes) -> tuple[bool, str | None]:
+        if len(body) > ENGINE_HEALTH_RESPONSE_LIMIT:
+            return False, "The engine health response is unexpectedly large."
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+            return False, "The engine health response is not valid JSON."
+        if not isinstance(payload, dict):
+            return False, "The engine health response is incomplete."
+
+        if mode == "rvc":
+            slots = payload.get("modelSlots")
+            if not isinstance(slots, list):
+                return False, "The RVC model catalog is still loading."
+            return True, None
+
+        if mode == "beatrice":
+            model_info = payload.get("model_info")
+            voices = model_info.get("voice") if isinstance(model_info, dict) else None
+            if payload.get("voice_changer_type") != "Beatrice_v2" or not isinstance(voices, dict) or not voices:
+                return False, "The Beatrice voice catalog is still loading."
+            return True, None
+
+        return False, f"Unsupported engine mode: {mode}"
 
     def _stop_process(self, *, phase: str) -> None:
         with self._state_lock:
@@ -704,19 +1004,7 @@ class EngineSupervisor:
 
         if process is not None and process.poll() is None:
             if os.name == "nt":
-                try:
-                    taskkill_result = subprocess.run(
-                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                        timeout=6,
-                    )
-                    if taskkill_result.returncode != 0:
-                        with contextlib.suppress(OSError):
-                            process.terminate()
-                except (OSError, subprocess.TimeoutExpired):
+                if not self._terminate_windows_process_tree(process.pid):
                     with contextlib.suppress(OSError):
                         process.terminate()
             else:
@@ -736,7 +1024,8 @@ class EngineSupervisor:
                 log_handle.close()
 
         if process is not None:
-            self._wait_for_engine_port_to_close(timeout=3)
+            if self._wait_for_engine_port_to_close(timeout=3):
+                self._clear_engine_owner(engine_pid=process.pid)
 
     def _engine_port_is_open(self) -> bool:
         try:
@@ -748,7 +1037,7 @@ class EngineSupervisor:
         except OSError:
             return False
 
-    def _wait_for_engine_port_to_close(self, *, timeout: float) -> None:
+    def _wait_for_engine_port_to_close(self, *, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
@@ -758,7 +1047,8 @@ class EngineSupervisor:
                 ):
                     time.sleep(0.2)
             except OSError:
-                return
+                return True
+        return not self._engine_port_is_open()
 
     def shutdown(self) -> None:
         with self._state_lock:

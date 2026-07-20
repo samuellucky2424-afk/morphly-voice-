@@ -158,6 +158,11 @@ Invoke-MorphlyRobocopy `
     -ExcludedDirectories @("__pycache__", "logs", "model_dir", "pretrain", "upload_dir", "tmp_dir") `
     -ExcludedFiles @("*.pyc", "vcclient.log", "stored_setting.json", "rinna_hubert_base_jp.pt")
 New-Item -ItemType Directory -Path (Join-Path $stageRoot "server\model_dir") -Force | Out-Null
+Invoke-MorphlyRobocopy `
+    -Source (Join-Path $repositoryRoot "server\model_dir") `
+    -Destination (Join-Path $stageRoot "server\model_dir") `
+    -ExcludedDirectories @("__pycache__") `
+    -ExcludedFiles @("*.pyc")
 New-Item -ItemType Directory -Path (Join-Path $stageRoot "server\pretrain") -Force | Out-Null
 foreach ($pretrainFile in @("content_vec_500.onnx")) {
     Copy-Item `

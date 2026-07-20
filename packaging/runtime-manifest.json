@@ -59,6 +59,16 @@
       "purpose": "Neutral first-install Beatrice model-slot configuration"
     },
     {
+      "path": "packaging/default-rvc-slot/HatsuneMikuOv2.pth",
+      "kind": "file",
+      "purpose": "Versioned default RVC model fetched through Git LFS"
+    },
+    {
+      "path": "packaging/default-rvc-slot/params.json",
+      "kind": "file",
+      "purpose": "Versioned default RVC model metadata"
+    },
+    {
       "path": "Morphly-Voice-Dashboard/dist-static",
       "kind": "directory",
       "patterns": [
@@ -94,7 +104,12 @@
     {
       "path": "server/model_dir",
       "kind": "directory",
-      "purpose": "Writable RVC voice-model directory; users install their own models"
+      "patterns": [
+        "params.json",
+        "*.pth"
+      ],
+      "minimumMatches": 2,
+      "purpose": "Bundled default RVC voice model and writable user-model directory"
     },
     {
       "path": "server/pretrain",

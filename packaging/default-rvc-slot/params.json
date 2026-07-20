@@ -1,0 +1,28 @@
+{
+  "slotIndex": 0,
+  "voiceChangerType": "RVC",
+  "name": "HatsuneMikuOv2",
+  "description": "",
+  "credit": "",
+  "termsOfUseUrl": "",
+  "iconFile": "",
+  "speakers": {
+    "0": "target"
+  },
+  "modelFile": "HatsuneMikuOv2.pth",
+  "indexFile": "",
+  "defaultTune": 0,
+  "defaultIndexRatio": 0,
+  "defaultProtect": 0.5,
+  "isONNX": false,
+  "modelType": "pyTorchRVCv2",
+  "samplingRate": 40000,
+  "f0": true,
+  "embChannels": 768,
+  "embOutputLayer": 12,
+  "useFinalProj": false,
+  "deprecated": false,
+  "embedder": "hubert_base",
+  "sampleId": "",
+  "version": "v2"
+}

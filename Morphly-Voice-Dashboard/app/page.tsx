@@ -463,7 +463,9 @@ function VoiceWorkspace({ session, token, updater, onSignOut, onRefreshSession }
       try {
         const status = await getGatewayStatus();
         setGatewayStatus(status);
-        if (status.mode !== engineMode || (status.ready && !engineInfo)) void refreshEngine(true);
+        if (status.mode !== engineMode || (status.ready && (!engineInfo || engineInfo.voices.length === 0))) {
+          void refreshEngine(true);
+        }
         if (!status.ready) setEngineError(status.error || "");
       } catch {
         // The refresh button exposes connection errors without noisy polling toasts.

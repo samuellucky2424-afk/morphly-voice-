@@ -1,6 +1,6 @@
 {
   "name": "morphly-voice",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "description": "Morphly Voice desktop dashboard with RVC and Beatrice V2 engine support.",
   "scripts": {
