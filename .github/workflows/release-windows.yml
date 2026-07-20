@@ -308,9 +308,25 @@ jobs:
           }
           $version = $env:RELEASE_TAG.Substring(1)
           $artifactName = "Morphly-Voice-Windows-$version"
-          New-Item -ItemType Directory -Path "packaging\output" -Force | Out-Null
-          gh run download $env:ARTIFACT_RUN_ID --repo $env:GITHUB_REPOSITORY --name $artifactName --dir "packaging\output"
-          if ($LASTEXITCODE -ne 0) { throw "Could not download retained artifact $artifactName." }
+          $artifactOutput = Join-Path $PWD "packaging\output"
+          New-Item -ItemType Directory -Path $artifactOutput -Force | Out-Null
+          $downloaded = $false
+          foreach ($attempt in 1..5) {
+            $attemptDirectory = Join-Path $env:RUNNER_TEMP "morphly-retained-artifact-$attempt"
+            New-Item -ItemType Directory -Path $attemptDirectory -Force | Out-Null
+            gh run download $env:ARTIFACT_RUN_ID --repo $env:GITHUB_REPOSITORY --name $artifactName --dir $attemptDirectory
+            if ($LASTEXITCODE -eq 0) {
+              Copy-Item -Path (Join-Path $attemptDirectory "*") -Destination $artifactOutput -Recurse -Force
+              $downloaded = $true
+              break
+            }
+            if ($attempt -lt 5) {
+              $delay = 10 * $attempt
+              Write-Warning "GitHub artifact download attempt $attempt failed; retrying in $delay seconds."
+              Start-Sleep -Seconds $delay
+            }
+          }
+          if (-not $downloaded) { throw "Could not download retained artifact $artifactName after 5 attempts." }
 
           $installerName = "Morphly-Voice-Setup-$version.exe"
           $installer = Get-Item -LiteralPath (Join-Path "packaging\output" $installerName)
@@ -339,10 +355,32 @@ jobs:
           $installer = Get-Item -LiteralPath "packaging\output\Morphly-Voice-Setup-$env:RELEASE_VERSION.exe"
           $checksum = Get-Item -LiteralPath "$($installer.FullName).sha256"
 
+          function Invoke-GhJsonWithRetry {
+            param([scriptblock]$Command, [string]$Description, [int]$Attempts = 5)
+            foreach ($attempt in 1..$Attempts) {
+              $output = & $Command
+              $exitCode = $LASTEXITCODE
+              if ($exitCode -eq 0) {
+                try {
+                  return ($output | ConvertFrom-Json)
+                } catch {
+                  if ($attempt -eq $Attempts) { throw "$Description returned invalid JSON: $($_.Exception.Message)" }
+                }
+              }
+              if ($attempt -lt $Attempts) {
+                $delay = 10 * $attempt
+                Write-Warning "$Description failed on attempt $attempt; retrying in $delay seconds."
+                Start-Sleep -Seconds $delay
+              }
+            }
+            throw "$Description failed after $Attempts attempts."
+          }
+
           function Find-ReleaseByTag {
             param([string]$Tag)
-            $allReleases = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
-            if ($LASTEXITCODE -ne 0) { throw "Could not list GitHub releases." }
+            $allReleases = @(Invoke-GhJsonWithRetry {
+              gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
+            } "List GitHub releases")
             $matches = @($allReleases | Where-Object { [string]$_.tag_name -ceq $Tag })
             if ($matches.Count -gt 1) { throw "Found more than one GitHub release for $Tag." }
             if ($matches.Count -eq 1) { return $matches[0] }
@@ -351,13 +389,18 @@ jobs:
 
           $release = Find-ReleaseByTag $tag
           if (-not $release) {
-            $release = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases" `
+            $createOutput = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases" `
               -f "tag_name=$tag" `
               -f "name=Morphly Voice $env:RELEASE_VERSION" `
               -F draft=true `
               -F prerelease=false `
-              -F generate_release_notes=true | ConvertFrom-Json
-            if ($LASTEXITCODE -ne 0 -or -not $release.id -or [string]$release.tag_name -cne $tag -or -not $release.draft) {
+              -F generate_release_notes=true
+            if ($LASTEXITCODE -eq 0) {
+              $release = $createOutput | ConvertFrom-Json
+            } else {
+              $release = Find-ReleaseByTag $tag
+            }
+            if (-not $release.id -or [string]$release.tag_name -cne $tag -or -not $release.draft) {
               throw "Could not create and identify draft release $tag."
             }
           }
@@ -388,17 +431,43 @@ jobs:
 
           foreach ($file in @($installer, $checksum)) {
             if (-not (Confirm-RemoteAsset $release $file)) {
-              gh release upload $tag $file.FullName --repo $env:GITHUB_REPOSITORY
-              if ($LASTEXITCODE -ne 0) { throw "Could not upload $($file.Name)." }
-              $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)" | ConvertFrom-Json
+              $uploaded = $false
+              foreach ($attempt in 1..5) {
+                gh release upload $tag $file.FullName --repo $env:GITHUB_REPOSITORY --clobber
+                if ($LASTEXITCODE -eq 0) {
+                  $uploaded = $true
+                  break
+                }
+                $release = Invoke-GhJsonWithRetry {
+                  gh api "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)"
+                } "Refresh release $tag"
+                if (Confirm-RemoteAsset $release $file) {
+                  $uploaded = $true
+                  break
+                }
+                if ($attempt -lt 5) {
+                  $delay = 10 * $attempt
+                  Write-Warning "Upload attempt $attempt for $($file.Name) failed; retrying in $delay seconds."
+                  Start-Sleep -Seconds $delay
+                }
+              }
+              if (-not $uploaded) { throw "Could not upload $($file.Name) after 5 attempts." }
+              $release = Invoke-GhJsonWithRetry {
+                gh api "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)"
+              } "Refresh release $tag"
             }
           }
           if (-not (Confirm-RemoteAsset $release $installer) -or -not (Confirm-RemoteAsset $release $checksum)) {
             throw "GitHub did not verify both release assets. The release remains a draft."
           }
-          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)" -F draft=false -f make_latest=true | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "Assets are verified, but publishing $tag failed; the release remains a draft." }
-          $published = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or $published.draft) { throw "GitHub did not publish release $tag." }
-          $latest = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or [string]$latest.tag_name -cne $tag) { throw "Published release $tag is not marked latest." }
+          Invoke-GhJsonWithRetry {
+            gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)" -F draft=false -f make_latest=true
+          } "Publish release $tag" | Out-Null
+          $published = Invoke-GhJsonWithRetry {
+            gh api "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)"
+          } "Confirm release $tag publication"
+          if ($published.draft) { throw "GitHub did not publish release $tag." }
+          $latest = Invoke-GhJsonWithRetry {
+            gh api "repos/$env:GITHUB_REPOSITORY/releases/latest"
+          } "Confirm latest GitHub release"
+          if ([string]$latest.tag_name -cne $tag) { throw "Published release $tag is not marked latest." }
