@@ -61,8 +61,8 @@ export async function telemetryHeartbeat(request: ApiRequest): Promise<Record<st
     stringField(body, "engineMode", { max: 30 }) ||
     stringField(body, "engine", { max: 30 }) ||
     "unknown";
-  if (!new Set(["rvc", "beatrice", "unknown"]).has(engineMode)) {
-    throw new HttpError(400, "invalid_engine_mode", "engineMode must be rvc or beatrice.");
+  if (!new Set(["rvc", "beatrice", "meanvc", "unknown"]).has(engineMode)) {
+    throw new HttpError(400, "invalid_engine_mode", "engineMode must be rvc, beatrice, or meanvc.");
   }
 
   const status = stringField(body, "status", { max: 30 }) || null;

@@ -74,8 +74,8 @@ async function billingSnapshot(): Promise<BillingSnapshot> {
 
 function usageFields(body: Record<string, unknown>) {
   const engineMode = stringField(body, "engineMode", { max: 30 }) || stringField(body, "engine", { max: 30 });
-  if (engineMode !== "rvc" && engineMode !== "beatrice") {
-    throw new HttpError(400, "invalid_engine_mode", "engineMode must be rvc or beatrice.");
+  if (!engineMode || !new Set(["rvc", "beatrice", "meanvc"]).has(engineMode)) {
+    throw new HttpError(400, "invalid_engine_mode", "engineMode must be rvc, beatrice, or meanvc.");
   }
   return {
     engineMode,
